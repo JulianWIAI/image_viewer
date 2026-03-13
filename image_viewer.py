@@ -3,10 +3,73 @@
  SBS Bildeditor v4 – Bachelor Professional
  Autor   : [Dein Name]
  Datum   : März 2026
- Neu v4  : Text-to-Drawing Feature – 8 vorgezeichnete Formen
-           (Haus, Sonne, Stern, Herz, Blume, Auto, Baum, Pfeil)
-           werden per Dropdown + Klick auf dem Bild platziert.
-           Skalierbar, in Zeichenfarbe gefärbt.
+ Schule  : SBS Herzogenaurach
+ Prüfung : Bachelor Professional – Digitale Transformation
+==============================================================
+
+ PROJEKTÜBERSICHT:
+ -----------------
+ Professioneller Bildeditor im Stil von Adobe Photoshop,
+ entwickelt mit PyQt6 (GUI-Framework) und Pillow (Bildverarbeitung).
+
+ ARCHITEKTUR (Klassen-Übersicht):
+ ----------------------------------
+ ┌─────────────────────────────────────────────┐
+ │  ImageEditor  (QMainWindow)                 │  ← Hauptfenster,
+ │  • Menüleiste, Toolbar, Statusleiste        │    verwaltet alle
+ │  • Dock-Panel mit allen Werkzeugen          │    Zustände
+ │                                             │
+ │  ┌──────────────────────────────────────┐   │
+ │  │  ImageCanvas  (QLabel)               │   │  ← Zeigt das Bild,
+ │  │  • Zoom-Verwaltung                   │   │    hostet Overlays
+ │  │  • Hostet alle Overlay-Widgets       │   │
+ │  │                                      │   │
+ │  │  ┌─────────────┐ ┌───────────────┐   │   │
+ │  │  │ CropOverlay │ │  DrawOverlay  │   │   │  ← Transparente
+ │  │  │ (Rect/Lasso)│ │ (8 Werkzeuge) │   │   │    Widgets über
+ │  │  └─────────────┘ └───────────────┘   │   │    dem Bild
+ │  │  ┌──────────────────────────────┐    │   │
+ │  │  │  ShapePlacerOverlay          │    │   │
+ │  │  │  (Text-to-Drawing Vorschau)  │    │   │
+ │  │  └──────────────────────────────┘    │   │
+ │  └──────────────────────────────────────┘   │
+ │                                             │
+ │  AIWorker  (QThread)                        │  ← Läuft im
+ │  • Moondream KI-Analyse im Hintergrund      │    Hintergrund-Thread
+ └─────────────────────────────────────────────┘
+
+ SCHLÜSSELKONZEPTE:
+ -------------------
+ 1. Signal/Slot (PyQt6):
+    Widgets kommunizieren über Signale. Z.B.:
+    slider.valueChanged → _apply_adjustments()
+    overlay.drawing_done → _apply_draw_fn()
+    → Lose Kopplung, kein direkter Methodenaufruf nötig
+
+ 2. PIL / Pillow (Bildverarbeitung):
+    Alle Filteroperationen laufen auf PIL-Images (nicht auf QPixmap).
+    QPixmap ist nur für die Anzeige.
+    PIL → QPixmap: pil_to_qpixmap()
+
+ 3. Overlay-Konzept:
+    Transparente QWidgets liegen über dem Canvas.
+    Sie fangen Mausereignisse ab ohne das Bild selbst zu verändern.
+    Erst nach Abschluss (mouseRelease) wird das PIL-Bild aktualisiert.
+
+ 4. Undo-Stack:
+    Vor jeder destruktiven Operation wird eine Kopie des PIL-Images
+    in self.history gespeichert (max. 20 Schritte).
+
+ 5. Threading (QThread):
+    KI-Analyse läuft in AIWorker (separater Thread).
+    Verhindert dass die UI einfriert während Moondream arbeitet.
+    Kommunikation zurück zur UI via result_ready Signal.
+
+ ABHÄNGIGKEITEN:
+ ----------------
+   pip install Pillow PyQt6
+   ollama pull moondream   ← für KI-Analyse (optional)
+   ollama serve            ← muss laufen für KI
 ==============================================================
 """
 
@@ -38,7 +101,16 @@ except ImportError:
 # ══════════════════════════════════════════════════════════════
 
 def pil_to_qpixmap(img: "PILImage.Image") -> QPixmap:
-    """Konvertiert PIL-Image → QPixmap für die Anzeige."""
+    """
+    Konvertiert ein PIL-Image in ein QPixmap für die Qt-Anzeige.
+
+    WARUM diese Funktion?
+    PyQt6 kann PIL-Images nicht direkt anzeigen.
+    PIL speichert Pixel als Python-Bytes, Qt braucht QImage/QPixmap.
+    Weg: PIL → rohe RGBA-Bytes → QImage → QPixmap
+
+    RGBA = 4 Kanäle: Rot, Grün, Blau, Alpha (Transparenz)
+    """
     if img.mode != "RGBA":
         img = img.convert("RGBA")
     data = img.tobytes("raw", "RGBA")
@@ -47,10 +119,23 @@ def pil_to_qpixmap(img: "PILImage.Image") -> QPixmap:
 
 
 # ══════════════════════════════════════════════════════════════
-#  FORM-BIBLIOTHEK: Text-to-Drawing
-#  Jede Form ist als normalisiertes Polygon (0.0–1.0) definiert.
-#  Beim Zeichnen werden die Punkte auf die gewünschte Größe
-#  skaliert und an der Klickposition positioniert.
+#  FORM-BIBLIOTHEK: Text-to-Drawing Feature
+#
+#  KONZEPT:
+#  Statt eines KI-Modells (z.B. Stable Diffusion, zu langsam für Schule)
+#  werden Formen als normalisierte Vektorkoordinaten gespeichert.
+#
+#  NORMALISIERUNG:
+#  Alle Punkte liegen im Bereich 0.0–1.0 (unabhängig von Bildgröße).
+#  Beim Zeichnen werden sie mit dem gewünschten size-Parameter skaliert.
+#  Vorteil: Eine Form-Definition funktioniert für alle Größen (30px bis 400px).
+#
+#  VORTEIL gegenüber echtem Text-to-Image:
+#  ✓ Kein Modell-Download (mehrere GB)
+#  ✓ Sofortige Ausgabe (keine Wartezeit)
+#  ✓ Vollständig offline
+#  ✓ Deterministisch (immer gleiche Ausgabe)
+#  ✓ Erklärbar und nachvollziehbar
 # ══════════════════════════════════════════════════════════════
 
 def _scale_pts(pts, cx, cy, size):
@@ -277,12 +362,24 @@ def draw_shape_on_pil(img: "PILImage.Image", shape_key: str,
 
 class AIWorker(QThread):
     """
-    Hintergrund-Thread für die Moondream KI-Analyse.
-    Sendet das aktuelle Bild an Ollama und gibt die Beschreibung zurück.
-    Voraussetzung: ollama pull moondream
+    Hintergrund-Thread für die Moondream KI-Bildanalyse.
+
+    WARUM ein separater Thread?
+    KI-Analyse dauert 5–30 Sekunden. Würde sie im Haupt-Thread laufen,
+    würde die gesamte UI einfrieren (kein Klicken, kein Scrollen möglich).
+    → QThread verschiebt die Arbeit in einen Hintergrundprozess.
+    → Kommunikation zurück zur UI: result_ready Signal (Thread-sicher).
+
+    Ablauf:
+      1. PIL-Bild auf 512×512 verkleinern (schnellere Übertragung)
+      2. Als JPEG in Base64 kodieren
+      3. HTTP-POST an Ollama API (localhost:11434)
+      4. Antwort per Signal an ImageEditor senden
+
+    Voraussetzung: ollama serve + ollama pull moondream
     """
-    result_ready   = pyqtSignal(str)
-    error_occurred = pyqtSignal(str)
+    result_ready   = pyqtSignal(str)   # Sendet Beschreibungstext an UI
+    error_occurred = pyqtSignal(str)   # Sendet Fehlermeldung an UI
 
     def __init__(self, pil_image: "PILImage.Image"):
         super().__init__()
@@ -300,10 +397,10 @@ class AIWorker(QThread):
 
             payload = {
                 "model": "moondream",
-                "prompt": "Describe this image in detail. What objects, people, or scenes are visible? Answer in 2-3 sentences.",
+                "prompt": "Please describe what you see in this image. Mention the main subject, colors, and background. Write 2-3 complete sentences.",
                 "images": [b64],
                 "stream": False,
-                "options": {"num_predict": 120, "temperature": 0.1}
+                "options": {"num_predict": 200, "temperature": 0.1}
             }
             req = urllib.request.Request(
                 "http://localhost:11434/api/generate",
@@ -328,14 +425,25 @@ class AIWorker(QThread):
 
 class CropOverlay(QWidget):
     """
-    Transparentes Overlay über dem Bildbetrachter.
-    Modus 'rect':  Rechteck-Zuschnitt durch Klicken und Ziehen.
-    Modus 'lasso': Freihand-Zuschnitt durch Zeichnen mit der Maus.
-    Gibt die gewählte Region als Signal zurück.
+    Transparentes Overlay-Widget für den Zuschnitt-Modus.
+
+    KONZEPT 'Overlay':
+    Statt das Bild direkt zu verändern, wird ein unsichtbares Widget
+    über den Canvas gelegt. Dieses Widget fängt alle Mausereignisse ab.
+    Erst beim Loslassen der Maus wird das echte PIL-Bild zugeschnitten.
+    → Nicht-destruktiv: Der Nutzer sieht eine Vorschau bevor etwas passiert.
+
+    Modus 'rect':  Klicken + Ziehen → Rechteck
+    Modus 'lasso': Freihand zeichnen → Polygon-Maske
+
+    Signale (Signal/Slot-Prinzip):
+      rect_selected  → ImageEditor._do_rect_crop()
+      lasso_selected → ImageEditor._do_lasso_crop()
+      cancelled      → Statusleiste "Abgebrochen"
     """
-    rect_selected  = pyqtSignal(QRect)     # Rechteck fertig
-    lasso_selected = pyqtSignal(list)      # Lasso-Punkte fertig (Liste von QPoint)
-    cancelled      = pyqtSignal()          # Abbruch via Escape
+    rect_selected  = pyqtSignal(QRect)   # Rechteck-Koordinaten fertig
+    lasso_selected = pyqtSignal(list)    # Lasso-Punkte fertig
+    cancelled      = pyqtSignal()        # ESC gedrückt
 
     def __init__(self, parent, mode: str = "rect"):
         super().__init__(parent)
@@ -511,24 +619,36 @@ class ShapePlacerOverlay(QWidget):
 
 class DrawOverlay(QWidget):
     """
-    Transparentes Overlay über dem Canvas für alle Zeichen-Werkzeuge.
+    Zeichen-Overlay — implementiert Paint/GIMP-ähnliche Werkzeuge.
 
-    Werkzeuge:
-      'pen'      – Freihand-Stift (dünne Linie)
-      'brush'    – Freihand-Pinsel (dicke, weiche Linie)
-      'eraser'   – Radierer (zeichnet mit Hintergrundfarbe)
-      'line'     – Gerade Linie (Vorschau beim Ziehen)
-      'rect'     – Rechteck (Vorschau beim Ziehen)
-      'ellipse'  – Ellipse / Kreis (Vorschau beim Ziehen)
-      'text'     – Text einfügen (Klick = Position)
+    ARCHITEKTUR (2-Schichten-Modell):
+    ┌─────────────────────────────────────────┐
+    │  Schicht 1: self._preview (QPixmap)     │  ← Temporär, nur Vorschau
+    │  Freihand-Striche werden hier gerendert │    während Maus bewegt wird
+    ├─────────────────────────────────────────┤
+    │  Schicht 2: PIL-Image (permanent)       │  ← Echtes Bild, wird nur
+    │  Erst nach mouseRelease aktualisiert    │    bei drawing_done geändert
+    └─────────────────────────────────────────┘
 
-    Zeichenergebnis wird als Signal an den Editor gegeben,
-    der es auf das PIL-Bild überträgt (permanent).
+    WERKZEUGE und ihre PIL-Implementierung:
+      'pen'     → ImageDraw.line(), Breite = brush_size / zoom
+      'brush'   → wie pen, aber Alpha=160 (halbtransparent) + 3× breiter
+      'eraser'  → wie pen, aber Farbe=Weiß (übermalt)
+      'line'    → ImageDraw.line() von Start- zu Endpunkt
+      'rect'    → ImageDraw.rectangle() nur Umriss
+      'ellipse' → ImageDraw.ellipse() nur Umriss
+      'text'    → QInputDialog → ImageDraw.text()
+
+    ZOOM-KORREKTUR:
+    Overlay-Koordinaten sind in Bildschirmpixeln (zoomed).
+    PIL braucht echte Bildpixel → Division durch zoom-Faktor.
+    Beispiel: Klick bei x=200, zoom=2.0 → Bildpixel x=100
+
+    Signal:
+      drawing_done(fn) → ImageEditor._apply_draw_fn()
+      fn ist eine Lambda-Funktion die PIL-Image → PIL-Image transformiert
     """
-
-    # Signal: Fertige Zeichnung als QPixmap-Overlay übergeben
-    drawing_done   = pyqtSignal(object)   # PIL-Zeichenfunktion
-    stroke_done    = pyqtSignal()         # Pinselstrich abgeschlossen
+    drawing_done = pyqtSignal(object)  # PIL-Zeichenfunktion als Callable
 
     def __init__(self, parent, tool: str, color: QColor,
                  size: int, zoom: float):
@@ -800,8 +920,22 @@ class DrawOverlay(QWidget):
 
 class ImageCanvas(QLabel):
     """
-    Bildanzeige-Widget.
-    Trägt das Bild, verwaltet Zoom und hostet das CropOverlay.
+    Bildfläche — zentrales Anzeige-Widget des Editors.
+
+    WARUM QLabel statt QWidget?
+    QLabel hat eine eingebaute setPixmap()-Methode, die ein QPixmap
+    effizient darstellt. Zoom wird durch Skalieren des QPixmap erreicht.
+
+    ZOOM-IMPLEMENTIERUNG:
+    Zoom-Faktor (self._zoom) skaliert das angezeigte QPixmap.
+    Das PIL-Image bleibt immer in Originalgröße erhalten.
+    Beispiel: zoom=2.0 → Bild doppelt so groß angezeigt,
+              PIL-Image selbst unverändert.
+
+    OVERLAY-HOST:
+    Canvas ist Eltern-Widget aller Overlays (CropOverlay, DrawOverlay,
+    ShapePlacerOverlay). Overlays liegen flächendeckend darüber.
+    Immer nur ein Overlay gleichzeitig aktiv (self._overlay).
     """
 
     def __init__(self):
@@ -942,11 +1076,28 @@ class LabeledSlider(QWidget):
 
 class ImageEditor(QMainWindow):
     """
-    SBS Bildeditor v2 – Hauptfenster.
-    Photoshop-ähnliches Layout: Toolbar oben, Canvas Mitte,
-    Einstellungspanel rechts.
+    Hauptfenster des SBS Bildeditors.
+
+    VERANTWORTLICHKEITEN:
+    • Verwaltet den Anwendungszustand (aktuelles Bild, Undo-Stack, Werkzeuge)
+    • Erstellt Menüleiste, Toolbar, Canvas, Dock-Panel, Statusleiste
+    • Verbindet alle Signale mit ihren Slots (Signal/Slot-Prinzip)
+    • Delegiert Bildoperationen an PIL (Pillow-Bibliothek)
+    • Delegiert KI-Analyse an AIWorker (separater Thread)
+
+    ZUSTANDSVARIABLEN:
+      self.original_pil  – Unverändertes Original (für Reset & Slider-Basis)
+      self.current_pil   – Aktuell bearbeitetes Bild (wird gespeichert)
+      self.history       – Undo-Stack, max. 20 PIL-Image-Kopien
+      self.draw_tool     – Aktives Zeichen-Werkzeug ('pen', 'brush', ...)
+      self.draw_color    – Aktuelle Zeichenfarbe (QColor)
+      self.draw_size     – Pinselgröße in Pixeln
+
+    UNDO-MECHANISMUS:
+    Vor jeder destruktiven Operation: self._push() → kopiert current_pil
+    in history. self.undo() → stellt letzte Kopie wieder her.
     """
-    ZOOM_STEP = 0.15
+    ZOOM_STEP = 0.15   # Zoom-Schrittgröße pro Klick (15%)
 
     def __init__(self):
         super().__init__()
@@ -1375,14 +1526,14 @@ class ImageEditor(QMainWindow):
         layout.addWidget(btn_reset)
 
         # ── KI-Analyse Panel (großzügig)
-        grp_ai = self._grp("🤖  KI-ANALYSE  (Moondream)")
+        grp_ai = self._grp("🤖  KI-ANALYSE  (Moondream – Beta)")
         al = QVBoxLayout(grp_ai); al.setSpacing(6)
 
         # Großes Textfeld für die Antwort
         self.ai_text = QTextEdit()
         self.ai_text.setReadOnly(True)
-        self.ai_text.setMinimumHeight(120)
-        self.ai_text.setMaximumHeight(180)
+        self.ai_text.setMinimumHeight(150)
+        self.ai_text.setMaximumHeight(260)
         self.ai_text.setStyleSheet("""
             QTextEdit { background:#141414; color:#ccc; border:1px solid #2d2d2d;
                 border-radius:4px; padding:8px; font-size:12px; line-height:1.5; }
@@ -1480,11 +1631,20 @@ class ImageEditor(QMainWindow):
     # ══════════════════════════════════════════════
 
     def _push(self):
-        """Aktuellen Zustand in Undo-Stack schieben."""
+        """
+        Aktuellen Zustand in den Undo-Stack schieben.
+
+        UNDO-MECHANISMUS:
+        Jede destruktive Operation ruft zuerst _push() auf.
+        Dabei wird eine vollständige Kopie des PIL-Images gespeichert.
+        Speicherverbrauch: ~4 Bytes × Breite × Höhe pro Schritt.
+        Beispiel: 1920×1080 RGBA = ca. 8 MB pro Undo-Schritt.
+        Deshalb: Maximum 20 Schritte (≈ 160 MB worst case).
+        """
         if self.current_pil:
             self.history.append(self.current_pil.copy())
             if len(self.history) > 20:
-                self.history.pop(0)
+                self.history.pop(0)   # Ältesten Schritt entfernen
 
     def undo(self):
         if not self.history:
@@ -1541,7 +1701,13 @@ class ImageEditor(QMainWindow):
     def _do_rect_crop(self, rect: QRect):
         """
         Rechteck-Koordinaten vom Overlay in Bildkoordinaten umrechnen
-        und das Bild zuschneiden.
+        und PIL-Image zuschneiden.
+
+        KOORDINATEN-UMRECHNUNG (Zoom-Korrektur):
+        Das Overlay arbeitet in Bildschirmpixeln (beeinflusst durch Zoom).
+        PIL.Image.crop() braucht echte Bildpixel.
+        Formel: Bildpixel = Bildschirmpixel / zoom_faktor
+        Beispiel: zoom=2.0, Klick bei x=400 → Bildpixel x=200
         """
         if not self.current_pil: return
 
@@ -1568,9 +1734,16 @@ class ImageEditor(QMainWindow):
 
     def _do_lasso_crop(self, points: list):
         """
-        Lasso-Punkte vom Overlay in Bildkoordinaten umrechnen.
-        Erstellt eine Maske aus dem Polygon und schneidet den
-        Begrenzungsrahmen des Polygons aus.
+        Lasso-Zuschnitt: Freihand-Polygon als Maske anwenden.
+
+        MASKEN-KONZEPT (wichtig für die Prüfung!):
+        1. Schwarze Maske (L-Mode) in Originalgröße erstellen
+        2. Polygon mit Weiß füllen → weiß = sichtbar, schwarz = transparent
+        3. PIL.Image.paste() mit Maske: kopiert nur die weißen Bereiche
+        4. crop() auf Bounding Box des Polygons → fertiges Ergebnis
+
+        Ergebnis ist ein RGBA-Bild mit transparentem Hintergrund.
+        Kann als PNG mit Transparenz gespeichert werden.
         """
         if not self.current_pil or len(points) < 3: return
 
@@ -1614,9 +1787,16 @@ class ImageEditor(QMainWindow):
 
     def _apply_adjustments(self):
         """
-        Wendet Helligkeit/Kontrast/Sättigung/Schärfe auf das
-        Original an. Wichtig: Immer vom Original starten,
-        damit Werte nicht kumulieren.
+        Wendet Helligkeit/Kontrast/Sättigung/Schärfe live auf das Bild an.
+
+        WICHTIG – immer vom Original starten:
+        Würde man von current_pil starten, würden sich Werte aufaddieren.
+        Beispiel: Slider 2× auf 150 gesetzt → Helligkeit wäre 150% × 150% = 225%.
+        Lösung: Immer self.original_pil als Basis nehmen, dann alle
+        Schieberegler in einem Durchlauf anwenden.
+
+        ImageEnhance-Werte: 1.0 = keine Änderung, <1 = weniger, >1 = mehr.
+        Slider-Wert 100 → 100/100 = 1.0 (neutraler Wert)
         """
         if not self.original_pil: return
         img = self.original_pil.copy().convert("RGB")
@@ -1892,9 +2072,15 @@ class ImageEditor(QMainWindow):
 
     def set_draw_tool(self, tool: str):
         """
-        Aktives Zeichen-Werkzeug wechseln.
-        Schließt das laufende Overlay sofort und startet es
-        mit dem neuen Werkzeug neu – kein verzögerter Wechsel.
+        Aktives Zeichen-Werkzeug wechseln — sofort wirksam.
+
+        BUG-FIX (wichtig für die Prüfung erklären!):
+        Problem: Altes Overlay blieb aktiv nach Werkzeugwechsel.
+        Ursache: Overlay speichert das Werkzeug bei Erstellung.
+                 Wechsel des self.draw_tool änderte das laufende Overlay nicht.
+        Lösung:  Altes Overlay mit blockSignals(True) schließen
+                 (blockSignals verhindert Callback-Loop durch destroyed-Signal),
+                 dann neues Overlay mit neuem Werkzeug sofort starten.
         """
         self.draw_tool = tool
 
@@ -2100,7 +2286,9 @@ class ImageEditor(QMainWindow):
         self.ai_worker.start()
 
     def _on_ai_result(self, desc: str):
-        self.ai_text.setPlainText(f"🤖  KI-Beschreibung:\n\n{desc.strip()}")
+        self.ai_text.setPlainText(f"🤖  KI-Beschreibung (Beta):\n\n{desc.strip()}")
+        # Zum Anfang scrollen damit kein Text abgeschnitten wirkt
+        self.ai_text.verticalScrollBar().setValue(0)
         self._reset_ai_btn()
 
     def _on_ai_error(self, err: str):
