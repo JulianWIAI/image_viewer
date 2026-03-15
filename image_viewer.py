@@ -3325,34 +3325,49 @@ class ThreeDViewerWidget(QWidget):
 
     # ── Texture helpers ───────────────────────────────────────
     @staticmethod
-    def _dilate_texture(img_np, char_mask, iterations=3):
+    def _dilate_texture(img_np, char_mask, iterations=10):
         """
-        Edge-padding: expands character colors outward into the background
-        by `iterations` pixels (vectorised numpy, no Python pixel loop).
+        Edge-padding: smears character colors outward into the background
+        by `iterations` pixels so that seam / boundary UV samples always
+        hit solid colour instead of the anti-aliased white halo.
 
-        Each pass fills unfilled fringe pixels with the weighted average of
-        their already-filled 4-connected neighbors.  The atlas character
-        area is untouched; only the boundary fringe around the silhouette
-        is written, eliminating the white anti-aliasing halo that would
-        otherwise bleed onto seam UVs.
+        Primary path: cv2 morphological dilation (fast, large radius).
+        Fallback:     vectorised numpy neighbour-average (no extra deps).
         """
         import numpy as np
-        result = img_np.copy()
-        filled = char_mask.copy()
-        for _ in range(iterations):
-            pad_r = np.pad(result, ((1, 1), (1, 1), (0, 0)), constant_values=0.0)
-            pad_f = np.pad(filled.astype(np.float32), 1,      constant_values=0.0)
-            nbr_c = (pad_r[:-2, 1:-1] + pad_r[2:,  1:-1] +
-                     pad_r[1:-1, :-2] + pad_r[1:-1, 2:])
-            nbr_n = (pad_f[:-2, 1:-1] + pad_f[2:,  1:-1] +
-                     pad_f[1:-1, :-2] + pad_f[1:-1, 2:])
-            to_fill = ~filled & (nbr_n > 0)
-            if not to_fill.any():
-                break
-            avg    = nbr_c / np.maximum(nbr_n[:, :, None], 1.0)
-            result = np.where(to_fill[:, :, None], avg, result)
-            filled = filled | to_fill
-        return result
+        try:
+            import cv2
+            img_u8  = (img_np * 255).astype(np.uint8)
+            result  = img_u8.copy()
+            filled  = char_mask.astype(np.uint8)          # 1 = has colour
+            kernel  = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+            for _ in range(iterations):
+                dilated     = cv2.dilate(result, kernel)
+                new_filled  = cv2.dilate(filled, kernel)
+                grow_mask   = (new_filled > 0) & (filled == 0)
+                if not grow_mask.any():
+                    break
+                result[grow_mask] = dilated[grow_mask]
+                filled = new_filled
+            return result.astype(np.float32) / 255.0
+        except ImportError:
+            # numpy fallback — 4-connected neighbour average
+            result = img_np.copy()
+            filled = char_mask.copy()
+            for _ in range(iterations):
+                pad_r = np.pad(result, ((1, 1), (1, 1), (0, 0)), constant_values=0.0)
+                pad_f = np.pad(filled.astype(np.float32), 1,      constant_values=0.0)
+                nbr_c = (pad_r[:-2, 1:-1] + pad_r[2:,  1:-1] +
+                         pad_r[1:-1, :-2] + pad_r[1:-1, 2:])
+                nbr_n = (pad_f[:-2, 1:-1] + pad_f[2:,  1:-1] +
+                         pad_f[1:-1, :-2] + pad_f[1:-1, 2:])
+                to_fill = ~filled & (nbr_n > 0)
+                if not to_fill.any():
+                    break
+                avg    = nbr_c / np.maximum(nbr_n[:, :, None], 1.0)
+                result = np.where(to_fill[:, :, None], avg, result)
+                filled = filled | to_fill
+            return result
 
     @staticmethod
     def _compute_inset_map(char_mask, inset_px=3):
@@ -3418,33 +3433,63 @@ class ThreeDViewerWidget(QWidget):
     @staticmethod
     def _make_back_texture(img_np, char_mask):
         """
-        Builds a coherent backside texture using the same 3-pixel inset
-        ring used for UV insetting.
+        Builds a solid, fully-opaque backside texture.
 
-        Every back pixel inherits the color of the nearest solidly-interior
-        front pixel (>= 3px from the silhouette boundary).  This eliminates
-        anti-aliased edge colors and ensures the back matches the seam UVs:
-        solid orange body → orange back, solid black hair → black back.
+        Primary path (cv2):
+          1. Erode the silhouette 2px to get a clean interior core.
+          2. Use cv2.inpaint (TELEA) to propagate core colours into the
+             anti-aliased fringe, giving a seamless solid fill.
+          3. Slight Gaussian blur + mild desaturation.
+          4. Hard-mask alpha: every character pixel = 1.0, background = 0.
+
+        Fallback (scipy / PIL):
+          Nearest-neighbour fill via _compute_inset_map (original method).
         """
         import numpy as np
-        from PIL import Image as _PIL, ImageFilter as _IFB
-
         char = char_mask
 
-        # ── 1. Map every pixel to its nearest solid-interior pixel ────
-        row_ins, col_ins = ThreeDViewerWidget._compute_inset_map(char, inset_px=3)
+        try:
+            import cv2
 
-        # ── 2. Sample solid-interior color for every character pixel ──
-        back_fill = img_np[row_ins, col_ins] * char[:, :, None]
+            img_u8   = (img_np * 255).astype(np.uint8)
+            char_u8  = char.astype(np.uint8) * 255
 
-        # ── 3. Slight blur + desaturation to read as "the back" ───────
-        pil  = _PIL.fromarray((back_fill * 255).astype(np.uint8))
-        pil  = pil.filter(_IFB.GaussianBlur(radius=1.5))
-        back = np.array(pil, dtype=np.float32) / 255.0
-        gray = back.mean(axis=2, keepdims=True)
-        back = (back * 0.85 + gray * 0.15).clip(0.0, 1.0)
+            # ── 1. Eroded interior core ────────────────────────────────
+            kernel   = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+            interior = cv2.erode(char_u8, kernel, iterations=2)  # 2px solid core
 
-        return np.where(char[:, :, None], back, 0.0)
+            # ── 2. Start with front image masked to solid interior ─────
+            result = img_u8.copy()
+            result[interior == 0] = 0   # zero out fringe + background
+
+            # ── 3. Inpaint fringe pixels (char but NOT interior) ───────
+            fringe_mask = ((char_u8 > 0) & (interior == 0)).astype(np.uint8) * 255
+            if fringe_mask.any():
+                result_bgr = cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
+                result_bgr = cv2.inpaint(result_bgr, fringe_mask,
+                                         inpaintRadius=5, flags=cv2.INPAINT_TELEA)
+                result = cv2.cvtColor(result_bgr, cv2.COLOR_BGR2RGB)
+
+            # ── 4. Smooth + mild desaturation ─────────────────────────
+            result = cv2.GaussianBlur(result, (3, 3), 1.2)
+            back_f = result.astype(np.float32) / 255.0
+            gray   = back_f.mean(axis=2, keepdims=True)
+            back_f = (back_f * 0.85 + gray * 0.15).clip(0.0, 1.0)
+
+            # ── 5. Hard-mask: no semi-transparent pixels ───────────────
+            return np.where(char[:, :, None], back_f, 0.0)
+
+        except ImportError:
+            # ── numpy / PIL fallback ───────────────────────────────────
+            from PIL import Image as _PIL, ImageFilter as _IFB
+            row_ins, col_ins = ThreeDViewerWidget._compute_inset_map(char, inset_px=3)
+            back_fill = img_np[row_ins, col_ins] * char[:, :, None]
+            pil  = _PIL.fromarray((back_fill * 255).astype(np.uint8))
+            pil  = pil.filter(_IFB.GaussianBlur(radius=1.5))
+            back = np.array(pil, dtype=np.float32) / 255.0
+            gray = back.mean(axis=2, keepdims=True)
+            back = (back * 0.85 + gray * 0.15).clip(0.0, 1.0)
+            return np.where(char[:, :, None], back, 0.0)
 
     def _draw(self):
         if self._fig is None or self._canvas is None:
@@ -3743,21 +3788,6 @@ class ThreeDViewerWidget(QWidget):
         img_np  = self._img_np                         # (gh, gw, 3) float32
         back_np = self._back_np if hasattr(self, '_back_np') else img_np[:, ::-1]
 
-        # ── UV inset map ───────────────────────────────────────
-        # For each grid position (i,j) this maps to the nearest pixel that
-        # is >= 3 px deep inside the character silhouette.  Boundary pixels
-        # (anti-aliased fringe) are redirected to their nearest solid-
-        # interior neighbour; interior pixels map to themselves (no change).
-        # Using these redirected coordinates in the UV formula forces seam
-        # and boundary vertices to sample solid, non-halo colors.
-        _INSET_PX = 3
-        if mask is not None:
-            row_ins, col_ins = ThreeDViewerWidget._compute_inset_map(
-                ~mask, inset_px=_INSET_PX)
-        else:
-            row_ins = np.tile(np.arange(gh)[:, None], (1, gw)).astype(np.int32)
-            col_ins = np.tile(np.arange(gw)[None, :], (gh, 1)).astype(np.int32)
-
         # ── 1. Build vertex + UV lists ─────────────────────────
         # Index grids: -1 where vertex is absent (NaN / background).
         front_idx = np.full((gh, gw), -1, dtype=np.int32)
@@ -3775,10 +3805,9 @@ class ThreeDViewerWidget(QWidget):
                     verts.append((float(self._XX[i, j]),
                                   float(self._YY[i, j]),
                                   float(ZZ[i, j])))
-                    # Atlas left-half UV [u=0..0.5], inset to avoid halo
-                    ci, ri = int(col_ins[i, j]), int(row_ins[i, j])
-                    uvs.append((ci / _gw1 * 0.5,
-                                1.0 - ri / _gh1))
+                    # Atlas left-half UV [u=0..0.5]
+                    uvs.append((j / _gw1 * 0.5,
+                                1.0 - i / _gh1))
 
         n_front = len(verts)
 
@@ -3790,10 +3819,9 @@ class ThreeDViewerWidget(QWidget):
                     verts.append((float(self._XX[i, j]),
                                   float(self._YY[i, j]),
                                   float(ZZ_back[i, j])))
-                    # Atlas right-half UV [u=0.5..1.0], inset to avoid halo
-                    ci, ri = int(col_ins[i, j]), int(row_ins[i, j])
-                    uvs.append((0.5 + ci / _gw1 * 0.5,
-                                1.0 - ri / _gh1))
+                    # Atlas right-half UV [u=0.5..1.0]
+                    uvs.append((0.5 + j / _gw1 * 0.5,
+                                1.0 - i / _gh1))
 
         # ── 2. Build face lists ────────────────────────────────
         faces = []
@@ -3889,8 +3917,8 @@ class ThreeDViewerWidget(QWidget):
         # seam-boundary UVs sample solid color instead of the white halo
         # left by anti-aliasing against the background.
         if mask is not None:
-            img_dil  = ThreeDViewerWidget._dilate_texture(img_np,  ~mask, iterations=3)
-            back_dil = ThreeDViewerWidget._dilate_texture(back_np, ~mask, iterations=3)
+            img_dil  = ThreeDViewerWidget._dilate_texture(img_np,  ~mask, iterations=10)
+            back_dil = ThreeDViewerWidget._dilate_texture(back_np, ~mask, iterations=10)
         else:
             img_dil, back_dil = img_np, back_np
 
@@ -4104,16 +4132,36 @@ class ThreeDViewerWidget(QWidget):
         self._draw()
 
     def set_ai_back(self, pil_img):
-        """Ersetzt die generierte Rückseite durch ein KI-synthetisiertes Bild."""
+        """
+        Replaces the generated back texture with an AI-synthesised image.
+
+        Processing pipeline (runs before the image touches the mesh):
+          1. Resize to grid dimensions.
+          2. Detect the AI back's own silhouette (bg mask).
+          3. Apply 20-pixel cv2 edge-dilation so seam UVs always hit solid
+             character colour instead of the anti-aliased transparent fringe.
+          4. Hard-enforce opacity: every silhouette pixel = fully opaque (1.0),
+             every background pixel = 0.  No semi-transparent halo survives.
+        """
         import numpy as np
         gw = self._img_np.shape[1]
         gh = self._img_np.shape[0]
         back_resized = pil_img.convert("RGB").resize((gw, gh), PILImage.Resampling.LANCZOS)
-        self._back_np      = np.array(back_resized, dtype=np.float32) / 255.0
-        # Fix 5: derive the transparency mask from the AI image itself so that
-        # the back surface is transparent in the right places (not based on a
-        # flipped copy of the front mask, which may not match the AI output).
-        self._back_bg_mask = ThreeDViewerWidget._detect_bg(self._back_np)
+        back_raw = np.array(back_resized, dtype=np.float32) / 255.0
+
+        # ── 1. Silhouette mask from the AI back itself ─────────────────
+        bg_mask  = ThreeDViewerWidget._detect_bg(back_raw)   # True = background
+        char_mask = ~bg_mask                                  # True = character
+
+        # ── 2. Edge-pad: smear character colours 20px outward ──────────
+        back_dil = ThreeDViewerWidget._dilate_texture(back_raw, char_mask,
+                                                      iterations=20)
+
+        # ── 3. Hard opacity: silhouette = 1.0, background = exactly 0 ──
+        back_clean = np.where(char_mask[:, :, None], back_dil, 0.0)
+
+        self._back_np      = back_clean
+        self._back_bg_mask = bg_mask
         self._draw()
 
 
