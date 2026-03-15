@@ -3211,8 +3211,9 @@ class ThreeDViewerWidget(QWidget):
         self.depth_scale = depth_scale
         self.invert      = invert
         self.show_back   = show_back
-        self._canvas     = None
-        self._fig        = None
+        self._canvas       = None
+        self._fig          = None
+        self._back_bg_mask = None   # set by set_ai_back(); None = use flipped front mask
         self.setMinimumSize(600, 420)
         self._init_plot()
 
@@ -3255,23 +3256,21 @@ class ThreeDViewerWidget(QWidget):
         aspect = iw / max(1, ih)
         self._XX, self._YY = np.meshgrid(
             np.linspace(-0.5 * aspect, 0.5 * aspect, gw),
-            np.linspace(-0.5, 0.5, gh),
+            np.linspace(0.5, -0.5, gh),   # Phase 1: Y top→bottom in image = +Y→−Y in 3D
         )
 
-        # ── Generierte Rückseite ──────────────────────────────
-        # Horizontaler Flip + leichter Blur + leichte Desaturierung.
-        # Kein starkes Abdunkeln mehr — Rückseite soll gut sichtbar bleiben.
-        from PIL import ImageFilter as _IFB
-        img_back_pil = img_s.transpose(PILImage.Transpose.FLIP_LEFT_RIGHT)
-        img_back_pil = img_back_pil.filter(_IFB.GaussianBlur(radius=2))
-        back_np = np.array(img_back_pil, dtype=np.float32) / 255.0
-        # Leicht desaturieren (20 % Grau einmischen) — erkennbar, aber "Rückseite"
-        gray = back_np.mean(axis=2, keepdims=True)
-        back_np = (back_np * 0.80 + gray * 0.20).clip(0, 1)
-        self._back_np = back_np
-
         # ── Hintergrund-Maske (True = Hintergrundpixel → transparent) ──
+        # Computed first so _make_back_texture can use char_mask.
         self._bg_mask = ThreeDViewerWidget._detect_bg(self._img_np)
+
+        # ── Generierte Rückseite — silhouette-ring inpainting ─────────
+        # Instead of a simple flip (which bleeds belly/light colors onto
+        # the back), we propagate the colors from the inner silhouette
+        # ring outward.  Each back pixel inherits the nearest edge color
+        # of the FRONT (orange body → orange back, black hair → black
+        # back), giving a coherent result for any character pose.
+        self._back_np = ThreeDViewerWidget._make_back_texture(
+            self._img_np, ~self._bg_mask)
 
         self._draw()
 
@@ -3280,16 +3279,144 @@ class ThreeDViewerWidget(QWidget):
         """
         Erkennt Hintergrundpixel: Flood-Fill-Approximation über Eck-Farbe
         + direkte Erkennung nahezu-weißer Pixel.
+
+        After the raw threshold pass a morphological 'fill-holes' step
+        removes interior false-positives (slight transparency / JPEG
+        artefacts inside the character body) that would otherwise punch
+        NaN holes through the mesh.
         """
         import numpy as np
-        # Eckpixel als Hintergrund-Referenzfarbe
+        # ── Raw threshold pass ────────────────────────────────
         corners = np.array([img_np[0, 0], img_np[0, -1],
                              img_np[-1, 0], img_np[-1, -1]])
         bg = corners.mean(axis=0)                          # (3,)
         diff = np.abs(img_np - bg).mean(axis=2)            # (gh, gw)
         near_bg    = diff < threshold
         near_white = img_np.min(axis=2) > 0.82
-        return near_bg | near_white
+        raw_mask   = near_bg | near_white                  # True = background
+
+        # ── Fill interior holes ───────────────────────────────
+        # A background-classified pixel that is completely enclosed by
+        # character pixels is a false positive (body artefact).  We keep
+        # only background pixels that are reachable from the image border
+        # through other background pixels — those are truly exterior.
+        try:
+            from scipy.ndimage import binary_fill_holes
+            # ~raw_mask = character (True); fill enclosed False regions
+            import numpy as _np
+            filled = _np.asarray(binary_fill_holes(~raw_mask), dtype=bool)
+            return ~filled
+        except ImportError:
+            # Pure-numpy fallback: iterative dilation from the border,
+            # constrained to raw_mask.  Converges in ≤ h+w steps.
+            flood = np.zeros_like(raw_mask)
+            flood[0,  :] = raw_mask[0,  :]
+            flood[-1, :] = raw_mask[-1, :]
+            flood[:,  0] = raw_mask[:,  0]
+            flood[:, -1] = raw_mask[:, -1]
+            for _ in range(raw_mask.shape[0] + raw_mask.shape[1]):
+                pad   = np.pad(flood, 1, constant_values=False)
+                grown = (pad[:-2, 1:-1] | pad[2:,  1:-1] |
+                         pad[1:-1, :-2] | pad[1:-1, 2:]) & raw_mask
+                if np.array_equal(grown, flood):
+                    break
+                flood = grown
+            return flood
+
+    # ── Texture helpers ───────────────────────────────────────
+    @staticmethod
+    def _dilate_texture(img_np, char_mask, iterations=3):
+        """
+        Edge-padding: expands character colors outward into the background
+        by `iterations` pixels (vectorised numpy, no Python pixel loop).
+
+        Each pass fills unfilled fringe pixels with the weighted average of
+        their already-filled 4-connected neighbors.  The atlas character
+        area is untouched; only the boundary fringe around the silhouette
+        is written, eliminating the white anti-aliasing halo that would
+        otherwise bleed onto seam UVs.
+        """
+        import numpy as np
+        result = img_np.copy()
+        filled = char_mask.copy()
+        for _ in range(iterations):
+            pad_r = np.pad(result, ((1, 1), (1, 1), (0, 0)), constant_values=0.0)
+            pad_f = np.pad(filled.astype(np.float32), 1,      constant_values=0.0)
+            nbr_c = (pad_r[:-2, 1:-1] + pad_r[2:,  1:-1] +
+                     pad_r[1:-1, :-2] + pad_r[1:-1, 2:])
+            nbr_n = (pad_f[:-2, 1:-1] + pad_f[2:,  1:-1] +
+                     pad_f[1:-1, :-2] + pad_f[1:-1, 2:])
+            to_fill = ~filled & (nbr_n > 0)
+            if not to_fill.any():
+                break
+            avg    = nbr_c / np.maximum(nbr_n[:, :, None], 1.0)
+            result = np.where(to_fill[:, :, None], avg, result)
+            filled = filled | to_fill
+        return result
+
+    @staticmethod
+    def _make_back_texture(img_np, char_mask):
+        """
+        Builds a coherent backside texture via silhouette-ring inpainting.
+
+        Algorithm:
+          1. Erode char_mask by 1 pixel → find the inner silhouette ring.
+          2. For every character pixel, sample the color of its nearest
+             ring pixel in the FRONT image (nearest-neighbor via EDT).
+             → orange body maps to orange back, black hair to black back.
+          3. Gaussian blur (r=1.5) + 15 % grey desaturation.
+
+        No left-right flip is performed, so front belly colors cannot
+        accidentally dominate the back.
+        """
+        import numpy as np
+        from PIL import Image as _PIL, ImageFilter as _IFB
+
+        char = char_mask  # True = character pixel
+
+        # ── 1. Silhouette ring (1-pixel erosion) ──────────────────────
+        char_pil = _PIL.fromarray((char * 255).astype(np.uint8))
+        try:
+            from PIL.ImageFilter import MinFilter
+            eroded = np.array(char_pil.filter(MinFilter(3)), dtype=bool)
+        except Exception:
+            eroded = char
+        ring = char & ~eroded
+        if not ring.any():
+            ring = char     # degenerate case (tiny image): use full silhouette
+
+        # ── 2. Nearest-ring color for every pixel ─────────────────────
+        try:
+            from scipy.ndimage import distance_transform_edt
+            _, nn = distance_transform_edt(~ring, return_indices=True)
+            back_fill = img_np[nn[0], nn[1]]            # (gh, gw, 3)
+        except ImportError:
+            # Fallback: iterative 4-connected dilation outward from ring
+            back_fill = img_np * ring[:, :, None]
+            filled    = ring.copy()
+            for _ in range(img_np.shape[0] + img_np.shape[1]):
+                pad_c = np.pad(back_fill, ((1,1),(1,1),(0,0)), constant_values=0.0)
+                pad_f = np.pad(filled.astype(np.float32), 1,   constant_values=0.0)
+                nbr_c = (pad_c[:-2,1:-1] + pad_c[2:,1:-1] +
+                         pad_c[1:-1,:-2] + pad_c[1:-1,2:])
+                nbr_n = (pad_f[:-2,1:-1] + pad_f[2:,1:-1] +
+                         pad_f[1:-1,:-2] + pad_f[1:-1,2:])
+                to_fill = char & ~filled & (nbr_n > 0)
+                if not to_fill.any():
+                    break
+                avg       = nbr_c / np.maximum(nbr_n[:,:,None], 1.0)
+                back_fill = np.where(to_fill[:,:,None], avg, back_fill)
+                filled    = filled | to_fill
+
+        # ── 3. Smooth + slight desaturation ───────────────────────────
+        fill_pil = _PIL.fromarray((back_fill * 255).astype(np.uint8))
+        fill_pil = fill_pil.filter(_IFB.GaussianBlur(radius=1.5))
+        back     = np.array(fill_pil, dtype=np.float32) / 255.0
+        gray     = back.mean(axis=2, keepdims=True)
+        back     = (back * 0.85 + gray * 0.15).clip(0.0, 1.0)
+
+        # Apply only inside the character region; leave background zero
+        return np.where(char[:, :, None], back, 0.0)
 
     def _draw(self):
         if self._fig is None or self._canvas is None:
@@ -3297,11 +3424,17 @@ class ThreeDViewerWidget(QWidget):
         import numpy as np
         from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
-        # Alten Rotations-Handler trennen
-        if hasattr(self, '_rot_cid') and self._rot_cid is not None:
-            try: self._canvas.mpl_disconnect(self._rot_cid)
-            except Exception: pass
-        self._rot_cid = None
+        # ── Kantenglättungs-Radius (Pixel) ────────────────────
+        # Erhöhen für weichere/rundere Kanten, 0 zum Deaktivieren.
+        _EDGE_FEATHER_PX = 3
+
+        # Alten Rotations-Handler trennen (beide Event-IDs)
+        for _attr in ('_rot_cid', '_rot_cid2'):
+            cid = getattr(self, _attr, None)
+            if cid is not None:
+                try: self._canvas.mpl_disconnect(cid)
+                except Exception: pass
+            setattr(self, _attr, None)
 
         self._fig.clear()
         ax = self._fig.add_subplot(111, projection="3d")
@@ -3321,117 +3454,470 @@ class ThreeDViewerWidget(QWidget):
         except Exception:
             depth = depth_raw
 
-        # sqrt-Kompression × 0.5 → Vorder-/Rückfläche deutlich näher beieinander
+        # Normalize to [0, 1] — guards against AI estimators that output
+        # arbitrary float scales which would blow up Z unconditionally.
+        _d_min, _d_max = float(depth.min()), float(depth.max())
+        if _d_max - _d_min > 1e-6:
+            depth = (depth - _d_min) / (_d_max - _d_min)
+
+        # sqrt-Kompression × 0.5 → Vorder-/Rückfläche näher beieinander
         ZZ = np.sqrt(depth) * self.depth_scale * 0.5
+
+        # ── Fix 1: Silhouetten-Kantenramp ─────────────────────
+        # Outermost _EDGE_FEATHER_PX layers of character pixels have their Z
+        # linearly ramped from 0 → full depth.  This rounds the model edge so
+        # it looks like a toy rather than a sharp-edged card.
+        # Tweak _EDGE_FEATHER_PX above to change the rounding amount.
+        if mask is not None and _EDGE_FEATHER_PX > 0:
+            char = (~mask).astype(np.float32)
+            dist = np.zeros_like(char)        # 0 = unvisited / background
+            cur  = char.copy()
+            for step in range(1, _EDGE_FEATHER_PX + 1):
+                pad     = np.pad(cur, 1, constant_values=0.0)
+                eroded  = (pad[:-2,1:-1] * pad[2:,1:-1]
+                           * pad[1:-1,:-2] * pad[1:-1,2:] * cur)
+                ring    = cur - eroded          # pixels removed this step
+                dist    = np.where(ring > 0, float(step), dist)
+                cur     = eroded
+            # Interior pixels (never in a ring) get maximum distance
+            dist = np.where((cur > 0) & (dist == 0), float(_EDGE_FEATHER_PX), dist)
+            feather = np.clip(dist / _EDGE_FEATHER_PX, 0.0, 1.0)
+            ZZ = ZZ * feather
+
+        # ── Fix 2: NaN für Hintergrund → keine Wasserfall-Faces ─
+        # np.nan causes plot_surface to skip any quad touching that vertex.
+        # Previously Z=0 created a visible slanted face at the silhouette.
         if mask is not None:
-            ZZ = np.where(mask, 0.0, ZZ)   # Hintergrund → Z = 0, berührt sich
-        ZZ_back   = -ZZ                     # symmetrisch
-        back_mask = mask[:, ::-1] if mask is not None else None
+            ZZ = np.where(mask, np.nan, ZZ)
+        ZZ_back = -ZZ   # NaN propagates: background stays absent on back too
 
-        # ── Facecolor-Hilfsfunktion ────────────────────────────
-        def _fc(rgb_np, m=None):
-            r  = rgb_np
-            fc = (r[:-1,:-1] + r[1:,:-1] + r[:-1,1:] + r[1:,1:]) / 4.0
-            if m is not None:
-                cnt   = (m[:-1,:-1].astype(np.float32) + m[1:,:-1]
-                         + m[:-1,1:] + m[1:,1:])
-                alpha = np.where(cnt >= 2, 0.0, 1.0).astype(np.float32)
-            else:
-                alpha = np.ones(fc.shape[:2], dtype=np.float32)
-            return np.concatenate([fc, alpha[:,:,np.newaxis]], axis=-1)
+        # ── Phase 3: Unified Poly3DCollection (single mesh, no set_visible) ──
+        # Builds the same watertight mesh as export_3d so the viewer always
+        # matches the exported file.  All faces are always present — no
+        # rotation-triggered set_visible swap needed.
 
-        # ── Rückseite (zuerst hinzufügen) ─────────────────────
-        _s_back = None
-        if self.show_back and hasattr(self, '_back_np'):
-            _s_back = ax.plot_surface(
-                self._XX, self._YY, ZZ_back,
-                facecolors=_fc(self._back_np, back_mask),
-                linewidth=0, antialiased=False, shade=False,
-                rstride=1, cstride=1,
-            )
+        back_img = (self._back_np
+                    if (self.show_back and hasattr(self, '_back_np'))
+                    else self._img_np)
 
-        # ── Vorderseite ────────────────────────────────────────
-        _s_front = ax.plot_surface(
-            self._XX, self._YY, ZZ,
-            facecolors=_fc(self._img_np, mask),
-            linewidth=0, antialiased=False, shade=False,
-            rstride=1, cstride=1,
-        )
+        gh, gw = ZZ.shape
+        fv     = np.isfinite(ZZ)          # (gh, gw) — True = character pixel
+        XX_r   = self._XX.ravel()
+        YY_r   = self._YY.ravel()
+        ZZ_r   = ZZ.ravel()
+        ZZB_r  = ZZ_back.ravel()
+        img_r  = self._img_np.reshape(-1, 3)
+        back_r = back_img.reshape(-1, 3)
 
-        # ── Silhouette-Seitenwände (Poly3DCollection) ──────────
-        # Echte Konturwände entlang der Charakter-Silhouette —
-        # verbindet Vorder- und Rückfläche mit Charakter-Farben.
-        if self.show_back and mask is not None and hasattr(self, '_back_np'):
-            gh, gw = ZZ.shape
-            char = ~mask
-            # Hintergrund-Nachbarn finden (numpy, kein scipy nötig)
-            pad   = np.pad(mask, 1, constant_values=True)
-            bg_top = pad[:-2, 1:-1]
-            bg_bot = pad[2:,  1:-1]
-            bg_lft = pad[1:-1, :-2]
-            bg_rgt = pad[1:-1, 2:]
-            dh = abs(float(self._YY[1, 0] - self._YY[0, 0]))
-            dw = abs(float(self._XX[0, 1] - self._XX[0, 0]))
+        # Quad validity: all 4 corners of a 1×1 grid cell must be character
+        qv = (fv[:-1, :-1] & fv[1:, :-1] &
+              fv[:-1,  1:] & fv[1:,  1:])          # (gh-1, gw-1)
+        ii_q, jj_q = np.where(qv)
+        k0 = ii_q * gw + jj_q
+        k1 = (ii_q + 1) * gw + jj_q
+        k2 = ii_q * gw + (jj_q + 1)
+        k3 = (ii_q + 1) * gw + (jj_q + 1)
 
-            quads, qcolors = [], []
-            bi, bj = np.where(char)
-            for k in range(len(bi)):
-                i, j   = int(bi[k]), int(bj[k])
-                zf, zb = float(ZZ[i, j]), float(ZZ_back[i, j])
-                if abs(zf - zb) < 1e-5:
-                    continue
-                x  = float(self._XX[i, j])
-                y  = float(self._YY[i, j])
-                hw, hh = dw * 0.5, dh * 0.5
-                # Mischfarbe: 60 % Vorderseite, 40 % Rückseite
-                cf = self._img_np[i, j]
-                cb = self._back_np[i, j]
-                ec = (cf * 0.6 + cb * 0.4).tolist() + [1.0]
-                # Wandfläche für jede Seite, die an Hintergrund grenzt
-                if bg_top[i, j]:
-                    quads.append([(x-hw,y-hh,zf),(x+hw,y-hh,zf),
-                                  (x+hw,y-hh,zb),(x-hw,y-hh,zb)])
-                    qcolors.append(ec)
-                if bg_bot[i, j]:
-                    quads.append([(x-hw,y+hh,zf),(x+hw,y+hh,zf),
-                                  (x+hw,y+hh,zb),(x-hw,y+hh,zb)])
-                    qcolors.append(ec)
-                if bg_lft[i, j]:
-                    quads.append([(x-hw,y-hh,zf),(x-hw,y+hh,zf),
-                                  (x-hw,y+hh,zb),(x-hw,y-hh,zb)])
-                    qcolors.append(ec)
-                if bg_rgt[i, j]:
-                    quads.append([(x+hw,y-hh,zf),(x+hw,y+hh,zf),
-                                  (x+hw,y+hh,zb),(x+hw,y-hh,zb)])
-                    qcolors.append(ec)
+        def _v(zr, kk):
+            """Stack (x, y, z) columns for index array kk."""
+            return np.stack([XX_r[kk], YY_r[kk], zr[kk]], axis=1)   # (N, 3)
 
-            if quads:
-                coll = Poly3DCollection(quads, linewidths=0)
-                coll.set_facecolor(qcolors)
-                ax.add_collection3d(coll)
+        # ── Front triangles (CCW, outward +Z) ─────────────────────────────
+        # Tri1: k0→k2→k3  │  Tri2: k0→k3→k1
+        ft1 = np.stack([_v(ZZ_r, k0), _v(ZZ_r, k2), _v(ZZ_r, k3)], axis=1)
+        ft2 = np.stack([_v(ZZ_r, k0), _v(ZZ_r, k3), _v(ZZ_r, k1)], axis=1)
+        fc1 = (img_r[k0] + img_r[k2] + img_r[k3]) / 3.0
+        fc2 = (img_r[k0] + img_r[k3] + img_r[k1]) / 3.0
 
-        # ── View-Angle-Handler: Vorderseite von hinten ausblenden ─
-        # Wenn der Nutzer mehr als ~80° dreht → Rückseite zeigen,
-        # Vorderseite ausblenden → kein Gesicht auf der Rückseite.
+        # ── Back triangles (reversed winding, outward −Z) ─────────────────
+        # Tri3: k0→k3→k2  │  Tri4: k0→k1→k3
+        bt1 = np.stack([_v(ZZB_r, k0), _v(ZZB_r, k3), _v(ZZB_r, k2)], axis=1)
+        bt2 = np.stack([_v(ZZB_r, k0), _v(ZZB_r, k1), _v(ZZB_r, k3)], axis=1)
+        bc1 = (back_r[k0] + back_r[k3] + back_r[k2]) / 3.0
+        bc2 = (back_r[k0] + back_r[k1] + back_r[k3]) / 3.0
+
+        all_tris   = np.concatenate([ft1, ft2, bt1, bt2], axis=0)   # (4N, 3, 3)
+        all_colors = np.concatenate([fc1, fc2, bc1, bc2], axis=0)   # (4N, 3)
+
+        # ── Seam triangles (boundary-edge stitching, vectorised) ───────────
+        if mask is not None:
+            # Pad quad-validity arrays so index arithmetic is uniform
+            q_pad_r = np.zeros((gh, gw - 1), dtype=bool)   # right-flank quads
+            q_pad_r[:-1, :] = qv                            # qv[i,j] = quad below row i
+            q_pad_l = np.zeros((gh, gw - 1), dtype=bool)
+            q_pad_l[1:, :] = qv                             # qv[i-1,j] = quad above row i
+
+            q_pad_d = np.zeros((gh - 1, gw), dtype=bool)   # down-flank quads
+            q_pad_d[:, :-1] = qv                            # qv[i,j] = quad right of col j
+            q_pad_u = np.zeros((gh - 1, gw), dtype=bool)
+            q_pad_u[:, 1:] = qv                             # qv[i,j-1] = quad left of col j
+
+            # ── Horizontal boundary edges  (i, j)–(i, j+1) ────────────────
+            ep_h = fv[:, :-1] & fv[:, 1:]                  # (gh, gw-1)
+            bnd_h = ep_h & (q_pad_l ^ q_pad_r)
+            hi, hj = np.where(bnd_h)
+            if hi.size:
+                hk0 = hi * gw + hj
+                hk1 = hi * gw + hj + 1
+                hfi  = _v(ZZ_r,  hk0);  hbi  = _v(ZZB_r, hk0)
+                hfi1 = _v(ZZ_r,  hk1);  hbi1 = _v(ZZB_r, hk1)
+                hcol = (img_r[hk0] * 0.6 + back_r[hk0] * 0.4 +
+                        img_r[hk1] * 0.6 + back_r[hk1] * 0.4) / 2.0
+
+                above = q_pad_l[hi, hj]                     # True → bottom edge
+                # above: (fi, bi1, fi1) + (fi, bi, bi1)  + back-face duplicates
+                a = np.where(above)[0]
+                ha_t1 = np.stack([hfi[a], hbi1[a], hfi1[a]], axis=1)
+                ha_t2 = np.stack([hfi[a], hbi[a],  hbi1[a]], axis=1)
+                ha_t1r = np.stack([hfi1[a], hbi1[a], hfi[a]], axis=1)   # reversed
+                ha_t2r = np.stack([hbi1[a], hbi[a],  hfi[a]], axis=1)   # reversed
+                ha_c  = np.concatenate([hcol[a]] * 4, axis=0)
+                # below: (fi, fi1, bi1) + (fi, bi1, bi)  + back-face duplicates
+                b = np.where(~above)[0]
+                hb_t1 = np.stack([hfi[b], hfi1[b], hbi1[b]], axis=1)
+                hb_t2 = np.stack([hfi[b], hbi1[b], hbi[b]],  axis=1)
+                hb_t1r = np.stack([hbi1[b], hfi1[b], hfi[b]], axis=1)   # reversed
+                hb_t2r = np.stack([hbi[b],  hbi1[b], hfi[b]], axis=1)   # reversed
+                hb_c  = np.concatenate([hcol[b]] * 4, axis=0)
+
+                seam_t = np.concatenate([ha_t1, ha_t2, ha_t1r, ha_t2r,
+                                         hb_t1, hb_t2, hb_t1r, hb_t2r], axis=0)
+                seam_c = np.concatenate([ha_c, hb_c], axis=0)
+                all_tris   = np.concatenate([all_tris, seam_t],   axis=0)
+                all_colors = np.concatenate([all_colors, seam_c], axis=0)
+
+            # ── Vertical boundary edges  (i, j)–(i+1, j) ──────────────────
+            ep_v = fv[:-1, :] & fv[1:, :]                  # (gh-1, gw)
+            bnd_v = ep_v & (q_pad_u ^ q_pad_d)
+            vi, vj = np.where(bnd_v)
+            if vi.size:
+                vk0 = vi * gw + vj
+                vk1 = (vi + 1) * gw + vj
+                vfi  = _v(ZZ_r,  vk0);  vbi  = _v(ZZB_r, vk0)
+                vfi1 = _v(ZZ_r,  vk1);  vbi1 = _v(ZZB_r, vk1)
+                vcol = (img_r[vk0] * 0.6 + back_r[vk0] * 0.4 +
+                        img_r[vk1] * 0.6 + back_r[vk1] * 0.4) / 2.0
+
+                onright = q_pad_d[vi, vj]                   # True → left boundary
+                # right: (fi, bi1, fi1) + (fi, bi, bi1)  + back-face duplicates
+                r = np.where(onright)[0]
+                vr_t1 = np.stack([vfi[r], vbi1[r], vfi1[r]], axis=1)
+                vr_t2 = np.stack([vfi[r], vbi[r],  vbi1[r]], axis=1)
+                vr_t1r = np.stack([vfi1[r], vbi1[r], vfi[r]], axis=1)   # reversed
+                vr_t2r = np.stack([vbi1[r], vbi[r],  vfi[r]], axis=1)   # reversed
+                vr_c  = np.concatenate([vcol[r]] * 4, axis=0)
+                # left: (fi, fi1, bi1) + (fi, bi1, bi)  + back-face duplicates
+                l = np.where(~onright)[0]
+                vl_t1 = np.stack([vfi[l], vfi1[l], vbi1[l]], axis=1)
+                vl_t2 = np.stack([vfi[l], vbi1[l], vbi[l]],  axis=1)
+                vl_t1r = np.stack([vbi1[l], vfi1[l], vfi[l]], axis=1)   # reversed
+                vl_t2r = np.stack([vbi[l],  vbi1[l], vfi[l]], axis=1)   # reversed
+                vl_c  = np.concatenate([vcol[l]] * 4, axis=0)
+
+                seam_t = np.concatenate([vr_t1, vr_t2, vr_t1r, vr_t2r,
+                                         vl_t1, vl_t2, vl_t1r, vl_t2r], axis=0)
+                seam_c = np.concatenate([vr_c, vl_c], axis=0)
+                all_tris   = np.concatenate([all_tris, seam_t],   axis=0)
+                all_colors = np.concatenate([all_colors, seam_c], axis=0)
+
+        # ── Render unified mesh ────────────────────────────────────────────
+        rgba = np.concatenate(
+            [np.clip(all_colors, 0.0, 1.0),
+             np.ones((len(all_colors), 1), dtype=np.float32)], axis=1)
+        coll = Poly3DCollection(all_tris, linewidths=0)
+        coll.set_facecolor(rgba)
+        ax.add_collection3d(coll)
+
+        # Auto-scale axes to the mesh extent
+        pts = all_tris.reshape(-1, 3)
+        for setter, col in zip(
+                [ax.set_xlim3d, ax.set_ylim3d, ax.set_zlim3d],
+                [pts[:, 0],     pts[:, 1],     pts[:, 2]]):
+            mn, mx = float(col.min()), float(col.max())
+            mid = (mn + mx) / 2
+            half = max((mx - mn) / 2, 1e-3)
+            setter(mid - half, mid + half)
+
         _init_az = -60.0
-        if _s_front is not None and _s_back is not None:
-            def _on_rot(_event):
-                canvas = self._canvas
-                if canvas is None:
-                    return
-                try:
-                    diff = (ax.azim - _init_az) % 360
-                    from_back = 80 < diff < 280
-                    _s_front.set_visible(not from_back)
-                    _s_back.set_visible(from_back)
-                    canvas.draw_idle()
-                except Exception:
-                    pass
-            self._rot_cid = self._canvas.mpl_connect(
-                'motion_notify_event', _on_rot)
-
         ax.view_init(elev=20, azim=_init_az)
         self._canvas.draw()
+
+    # ── Shared ZZ helper ──────────────────────────────────────
+    def _compute_ZZ(self):
+        """
+        Re-computes the same ZZ (and ZZ_back) arrays used in _draw(), so
+        export_3d() always produces geometry that matches the on-screen view.
+
+        Returns (ZZ, ZZ_back, mask) where background pixels are np.nan.
+        """
+        import numpy as np
+
+        # Feathering radius — must match _draw()
+        _EDGE_FEATHER_PX = 3
+
+        depth_raw = (1.0 - self._depth_np) if self.invert else self._depth_np
+        mask      = getattr(self, '_bg_mask', None)
+
+        try:
+            from PIL import ImageFilter as _IFD
+            _dp = PILImage.fromarray((depth_raw * 255).astype(np.uint8))
+            depth = np.array(_dp.filter(_IFD.GaussianBlur(radius=1.5)),
+                             dtype=np.float32) / 255.0
+        except Exception:
+            depth = depth_raw
+
+        # Normalize to [0, 1] — must match _draw()
+        _d_min, _d_max = float(depth.min()), float(depth.max())
+        if _d_max - _d_min > 1e-6:
+            depth = (depth - _d_min) / (_d_max - _d_min)
+
+        ZZ = np.sqrt(depth) * self.depth_scale * 0.5
+
+        if mask is not None and _EDGE_FEATHER_PX > 0:
+            char = (~mask).astype(np.float32)
+            dist = np.zeros_like(char)
+            cur  = char.copy()
+            for step in range(1, _EDGE_FEATHER_PX + 1):
+                pad    = np.pad(cur, 1, constant_values=0.0)
+                eroded = (pad[:-2,1:-1] * pad[2:,1:-1]
+                          * pad[1:-1,:-2] * pad[1:-1,2:] * cur)
+                ring   = cur - eroded
+                dist   = np.where(ring > 0, float(step), dist)
+                cur    = eroded
+            dist = np.where((cur > 0) & (dist == 0), float(_EDGE_FEATHER_PX), dist)
+            ZZ = ZZ * np.clip(dist / _EDGE_FEATHER_PX, 0.0, 1.0)
+
+        if mask is not None:
+            ZZ = np.where(mask, np.nan, ZZ)
+
+        return ZZ, -ZZ, mask
+
+    # ── 3D Export ─────────────────────────────────────────────
+    def export_3d(self, path: str):
+        """
+        Exports the current 3D model to *path*.
+
+        Supported formats (chosen by file extension):
+          .glb  — Binary glTF  (preferred; requires trimesh)
+          .obj  — Wavefront OBJ + .mtl + texture PNG (pure-Python fallback)
+
+        The exported mesh is a closed, textured object with:
+          • Front surface  — mapped to the left  half of the texture atlas
+          • Back  surface  — mapped to the right half of the texture atlas
+          • Side walls     — connecting quads along the silhouette
+        """
+        import numpy as np
+        import os
+
+        ZZ, ZZ_back, mask = self._compute_ZZ()
+        gh, gw = ZZ.shape
+
+        img_np  = self._img_np                         # (gh, gw, 3) float32
+        back_np = self._back_np if hasattr(self, '_back_np') else img_np[:, ::-1]
+
+        # ── 1. Build vertex + UV lists ─────────────────────────
+        # Index grids: -1 where vertex is absent (NaN / background).
+        front_idx = np.full((gh, gw), -1, dtype=np.int32)
+        back_idx  = np.full((gh, gw), -1, dtype=np.int32)
+
+        verts, uvs = [], []
+
+        # Front vertices
+        for i in range(gh):
+            for j in range(gw):
+                if np.isfinite(ZZ[i, j]):
+                    front_idx[i, j] = len(verts)
+                    verts.append((float(self._XX[i, j]),
+                                  float(self._YY[i, j]),
+                                  float(ZZ[i, j])))
+                    # Atlas left-half UV  [u=0..0.5]
+                    uvs.append((j / max(gw - 1, 1) * 0.5,
+                                1.0 - i / max(gh - 1, 1)))
+
+        n_front = len(verts)
+
+        # Back vertices (same XY, flipped Z)
+        for i in range(gh):
+            for j in range(gw):
+                if np.isfinite(ZZ_back[i, j]):
+                    back_idx[i, j] = len(verts) - n_front  # offset stored
+                    verts.append((float(self._XX[i, j]),
+                                  float(self._YY[i, j]),
+                                  float(ZZ_back[i, j])))
+                    # Atlas right-half UV [u=0.5..1.0]
+                    uvs.append((0.5 + j / max(gw - 1, 1) * 0.5,
+                                1.0 - i / max(gh - 1, 1)))
+
+        # ── 2. Build face lists ────────────────────────────────
+        faces = []
+
+        # Front faces — CCW winding (outward normal +Z)
+        for i in range(gh - 1):
+            for j in range(gw - 1):
+                i0 = front_idx[i,   j  ]
+                i1 = front_idx[i+1, j  ]
+                i2 = front_idx[i,   j+1]
+                i3 = front_idx[i+1, j+1]
+                if i0 >= 0 and i1 >= 0 and i2 >= 0 and i3 >= 0:
+                    faces.append((i0, i2, i3))
+                    faces.append((i0, i3, i1))
+
+        # Back faces — reversed winding (outward normal −Z)
+        for i in range(gh - 1):
+            for j in range(gw - 1):
+                b0 = back_idx[i,   j  ]
+                b1 = back_idx[i+1, j  ]
+                b2 = back_idx[i,   j+1]
+                b3 = back_idx[i+1, j+1]
+                if b0 >= 0 and b1 >= 0 and b2 >= 0 and b3 >= 0:
+                    # Apply n_front offset to convert to global index
+                    g0, g1, g2, g3 = (b0+n_front, b1+n_front,
+                                      b2+n_front, b3+n_front)
+                    faces.append((g0, g3, g2))   # reversed
+                    faces.append((g0, g1, g3))
+
+        # ── Phase 2: Boundary-edge stitching (manifold seam) ──────────────
+        # seam_fwd — correctly-wound seam faces (used for both GLB and OBJ)
+        # seam_dup — reversed duplicates for OBJ (GLB uses doubleSided=True)
+        seam_fwd, seam_dup = [], []
+        if mask is not None:
+            def _fq(ii, jj):
+                """True when front quad (ii,jj)→(ii+1,jj+1) has all 4 valid corners."""
+                return (0 <= ii < gh - 1 and 0 <= jj < gw - 1 and
+                        front_idx[ii,   jj  ] >= 0 and
+                        front_idx[ii+1, jj  ] >= 0 and
+                        front_idx[ii,   jj+1] >= 0 and
+                        front_idx[ii+1, jj+1] >= 0)
+
+            # ── Horizontal boundary edges  (i,j)–(i,j+1) ──────────────────
+            for i in range(gh):
+                for j in range(gw - 1):
+                    if front_idx[i, j] < 0 or front_idx[i, j+1] < 0:
+                        continue
+                    above = _fq(i - 1, j)
+                    below = _fq(i,     j)
+                    if above == below:
+                        continue
+                    fi  = front_idx[i, j]
+                    fi1 = front_idx[i, j+1]
+                    bi  = back_idx[i, j]   + n_front
+                    bi1 = back_idx[i, j+1] + n_front
+                    if above:
+                        seam_fwd += [(fi, bi1, fi1), (fi, bi, bi1)]
+                        seam_dup += [(fi1, bi1, fi), (bi1, bi, fi)]
+                    else:
+                        seam_fwd += [(fi, fi1, bi1), (fi, bi1, bi)]
+                        seam_dup += [(bi1, fi1, fi), (bi, bi1, fi)]
+
+            # ── Vertical boundary edges  (i,j)–(i+1,j) ────────────────────
+            for i in range(gh - 1):
+                for j in range(gw):
+                    if front_idx[i, j] < 0 or front_idx[i+1, j] < 0:
+                        continue
+                    left  = _fq(i, j - 1)
+                    right = _fq(i, j    )
+                    if left == right:
+                        continue
+                    fi  = front_idx[i,   j]
+                    fi1 = front_idx[i+1, j]
+                    bi  = back_idx[i,   j] + n_front
+                    bi1 = back_idx[i+1, j] + n_front
+                    if right:
+                        seam_fwd += [(fi, bi1, fi1), (fi, bi, bi1)]
+                        seam_dup += [(fi1, bi1, fi), (bi1, bi, fi)]
+                    else:
+                        seam_fwd += [(fi, fi1, bi1), (fi, bi1, bi)]
+                        seam_dup += [(bi1, fi1, fi), (bi, bi1, fi)]
+
+        verts_np      = np.array(verts,                          dtype=np.float32)
+        uvs_np        = np.array(uvs,                            dtype=np.float32)
+        # GLB: forward seam only — doubleSided material removes culling;
+        #      clean winding lets trimesh compute smooth vertex normals.
+        # OBJ: include reversed duplicates (no doubleSided flag in .mtl).
+        faces_glb_np  = np.array(faces + seam_fwd,              dtype=np.int32)
+        faces_obj_np  = np.array(faces + seam_fwd + seam_dup,   dtype=np.int32)
+
+        # ── 3. Texture atlas (with edge dilation) ──────────────────────
+        # Expand character colors 3 pixels outward into the background so
+        # seam-boundary UVs sample solid color instead of the white halo
+        # left by anti-aliasing against the background.
+        if mask is not None:
+            img_dil  = ThreeDViewerWidget._dilate_texture(img_np,  ~mask, iterations=3)
+            back_dil = ThreeDViewerWidget._dilate_texture(back_np, ~mask, iterations=3)
+        else:
+            img_dil, back_dil = img_np, back_np
+
+        atlas_np  = np.concatenate([img_dil, back_dil], axis=1)  # (gh, 2*gw, 3)
+        atlas_pil = PILImage.fromarray((atlas_np * 255).astype(np.uint8))
+
+        # ── 4. Export ──────────────────────────────────────────
+        ext = os.path.splitext(path)[1].lower()
+
+        # ── GLB via trimesh ────────────────────────────────────
+        if ext == '.glb':
+            try:
+                import trimesh
+                import trimesh.visual
+                import trimesh.visual.material as _tvm
+
+                # Always export as RGB — an RGBA texture causes some viewers to
+                # default to ALPHA_BLEND mode, breaking depth-buffer ordering.
+                atlas_rgb = atlas_pil.convert('RGB')
+
+                # PBR material: OPAQUE alpha so the depth buffer is never
+                # bypassed, and doubleSided so seam faces are visible from
+                # both the inside and outside without back-face culling.
+                mat = _tvm.PBRMaterial(
+                    baseColorTexture = atlas_rgb,
+                    alphaMode        = 'OPAQUE',
+                    doubleSided      = True,
+                )
+
+                mesh = trimesh.Trimesh(
+                    vertices = verts_np,
+                    faces    = faces_glb_np,
+                    process  = False,
+                )
+                mesh.visual = trimesh.visual.TextureVisuals(
+                    uv       = uvs_np,
+                    material = mat,
+                )
+                mesh.export(path)
+                return
+
+            except ImportError:
+                # trimesh not installed → fall through to OBJ
+                path = os.path.splitext(path)[0] + '.obj'
+                ext  = '.obj'
+
+        # ── OBJ + MTL (pure-Python fallback) ──────────────────
+        if ext in ('.obj', ''):
+            base   = os.path.splitext(path)[0]
+            mtl_p  = base + '.mtl'
+            tex_p  = base + '_texture.png'
+
+            # Save texture as RGB — no alpha channel in the OBJ texture either
+            atlas_pil.convert('RGB').save(tex_p)
+
+            with open(mtl_p, 'w') as f:
+                f.write(f"newmtl mat0\n"
+                        f"Ka 1 1 1\nKd 1 1 1\nKs 0 0 0\n"
+                        f"d 1.0\n"          # fully opaque — no transparency
+                        f"illum 2\n"        # full lighting model
+                        f"map_Kd {os.path.basename(tex_p)}\n")
+
+            with open(path if path.endswith('.obj') else path+'.obj', 'w') as f:
+                f.write(f"mtllib {os.path.basename(mtl_p)}\n")
+                f.write("usemtl mat0\n")
+                for (x, y, z) in verts_np:
+                    f.write(f"v {x:.6f} {y:.6f} {z:.6f}\n")
+                for (u, v) in uvs_np:
+                    f.write(f"vt {u:.6f} {v:.6f}\n")
+                for (a, b, c) in faces_obj_np:
+                    # OBJ is 1-indexed; include UV index = vertex index
+                    f.write(f"f {a+1}/{a+1} {b+1}/{b+1} {c+1}/{c+1}\n")
+
+    # ─────────────────────────────────────────────────────────
 
     def update_depth_scale(self, scale: float, invert: bool = False,
                            show_back: bool = True):
@@ -3446,7 +3932,11 @@ class ThreeDViewerWidget(QWidget):
         gw = self._img_np.shape[1]
         gh = self._img_np.shape[0]
         back_resized = pil_img.convert("RGB").resize((gw, gh), PILImage.Resampling.LANCZOS)
-        self._back_np = np.array(back_resized, dtype=np.float32) / 255.0
+        self._back_np      = np.array(back_resized, dtype=np.float32) / 255.0
+        # Fix 5: derive the transparency mask from the AI image itself so that
+        # the back surface is transparent in the right places (not based on a
+        # flipped copy of the front mask, which may not match the AI output).
+        self._back_bg_mask = ThreeDViewerWidget._detect_bg(self._back_np)
         self._draw()
 
 
@@ -3512,8 +4002,8 @@ class ThreeDModelDialog(QDialog):
         sp_s = "background:#2d2d2d; color:#ddd; border:1px solid #333; padding:2px;"
         ctrl.addWidget(QLabel("Tiefen-Effekt Stärke:"))
         self._depth_slider = QSlider(Qt.Orientation.Horizontal)
-        self._depth_slider.setRange(5, 80)
-        self._depth_slider.setValue(30)
+        self._depth_slider.setRange(5, 30)
+        self._depth_slider.setValue(20)
         self._depth_slider.setStyleSheet(
             "QSlider::groove:horizontal { background:#3a3a3a; height:4px; border-radius:2px; }"
             "QSlider::handle:horizontal { background:#4fc3f7; width:14px; height:14px; "
@@ -3599,6 +4089,24 @@ class ThreeDModelDialog(QDialog):
         self._btn_ai_back.clicked.connect(self._start_novel_view)
         self._btn_ai_back.setEnabled(False)
         ctrl.addWidget(self._btn_ai_back)
+
+        # Als 3D exportieren
+        self._btn_export = QPushButton("💾  Als 3D exportieren …")
+        self._btn_export.setStyleSheet(
+            "QPushButton { background:#2a1a3a; color:#c39bd3; border:1px solid #4a2a5a; "
+            "border-radius:4px; padding:8px; font-size:12px; } "
+            "QPushButton:hover { background:#3a2a4a; } "
+            "QPushButton:disabled { background:#1a1a1a; color:#444; border-color:#2a2a2a; }"
+        )
+        self._btn_export.setToolTip(
+            "Exportiert das 3D-Modell als:\n"
+            "  • .glb  (Binary glTF — bevorzugt, braucht trimesh)\n"
+            "  • .obj  (Wavefront OBJ + MTL + Textur-PNG)\n\n"
+            "pip install trimesh  →  für GLB-Export"
+        )
+        self._btn_export.clicked.connect(self._export_3d)
+        self._btn_export.setEnabled(False)
+        ctrl.addWidget(self._btn_export)
 
         nav = QLabel("Steuerung:\n• Maus ziehen = Rotation\n• Mausrad = Zoom")
         nav.setStyleSheet("color:#555; font-size:9px;")
@@ -3698,6 +4206,7 @@ class ThreeDModelDialog(QDialog):
             parent=self._right_panel
         )
         self._right_lay.addWidget(self._viewer)
+        self._btn_export.setEnabled(True)
         self._lbl_status.setText(
             "✅ Modell bereit.\n"
             "Maus ziehen = Rotation | Mausrad = Zoom"
@@ -3757,6 +4266,35 @@ class ThreeDModelDialog(QDialog):
             "  pip install torch torchvision "
             "--index-url https://download.pytorch.org/whl/cu128"
         )
+
+    def _export_3d(self):
+        if self._viewer is None:
+            return
+        try:
+            import trimesh as _tm  # noqa: F401
+            tri_ok = True
+        except ImportError:
+            tri_ok = False
+
+        filters = []
+        if tri_ok:
+            filters.append("Binary glTF (*.glb)")
+        filters.append("Wavefront OBJ (*.obj)")
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "3D-Modell exportieren", "", ";;".join(filters)
+        )
+        if not path:
+            return
+
+        self._lbl_status.setText("⏳ Exportiere 3D-Modell …")
+        QApplication.processEvents()
+        try:
+            self._viewer.export_3d(path)
+            self._lbl_status.setText(f"✅ Exportiert:\n{path}")
+        except Exception as e:
+            self._lbl_status.setText(f"❌ Export fehlgeschlagen:\n{e}")
+            QMessageBox.critical(self, "Export-Fehler", str(e))
 
     def _show_depth_map(self):
         if self._depth_map is None:
