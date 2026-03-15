@@ -3355,67 +3355,95 @@ class ThreeDViewerWidget(QWidget):
         return result
 
     @staticmethod
+    def _compute_inset_map(char_mask, inset_px=3):
+        """
+        Returns (row_map, col_map) — integer arrays of shape (gh, gw).
+
+        For each pixel (i, j):
+          • If it is already >= inset_px pixels inside the silhouette,
+            row_map[i,j] = i  and  col_map[i,j] = j  (maps to itself).
+          • Otherwise it maps to the nearest pixel that IS >= inset_px
+            pixels deep — i.e., the nearest solidly-interior pixel.
+
+        Used for UV insetting (seam faces sample solid interior colors)
+        and for back-texture generation (avoids anti-aliased edge halo).
+        """
+        import numpy as np
+        try:
+            from scipy.ndimage import distance_transform_edt
+            dist  = distance_transform_edt(char_mask)   # 0 outside, depth inside
+            solid = dist >= inset_px
+            if not solid.any():                         # very thin object
+                solid = dist >= max(1.0, float(dist.max()))
+            _, nn = distance_transform_edt(~solid, return_indices=True)
+            return nn[0].astype(np.int32), nn[1].astype(np.int32)
+        except ImportError:
+            # ── scipy-free fallback: erode inset_px times, then dilate ──
+            from PIL import Image as _PIL, ImageFilter as _IFP
+            pil = _PIL.fromarray((char_mask * 255).astype(np.uint8))
+            for _ in range(inset_px):
+                pil = pil.filter(_IFP.MinFilter(3))
+            solid = np.array(pil, dtype=bool)
+            if not solid.any():
+                solid = char_mask
+            h, w  = char_mask.shape
+            ri    = np.tile(np.arange(h)[:, None], (1, w)).astype(np.int32)
+            ci    = np.tile(np.arange(w)[None, :], (h, 1)).astype(np.int32)
+            r_map = np.where(solid, ri, -1).astype(np.int32)
+            c_map = np.where(solid, ci, -1).astype(np.int32)
+            filled = solid.copy()
+            for _ in range(h + w):
+                to_fill = char_mask & ~filled
+                if not to_fill.any():
+                    break
+                pr = np.pad(r_map, 1, constant_values=-1)
+                pc = np.pad(c_map, 1, constant_values=-1)
+                pf = np.pad(filled.astype(np.int32), 1, constant_values=0)
+                # Accumulate neighbor coordinates (only from filled pixels)
+                sr = (pr[:-2,1:-1]*(pf[:-2,1:-1]) + pr[2:,1:-1]*(pf[2:,1:-1]) +
+                      pr[1:-1,:-2]*(pf[1:-1,:-2]) + pr[1:-1,2:]*(pf[1:-1,2:]))
+                sc = (pc[:-2,1:-1]*(pf[:-2,1:-1]) + pc[2:,1:-1]*(pf[2:,1:-1]) +
+                      pc[1:-1,:-2]*(pf[1:-1,:-2]) + pc[1:-1,2:]*(pf[1:-1,2:]))
+                cnt = (pf[:-2,1:-1] + pf[2:,1:-1] +
+                       pf[1:-1,:-2] + pf[1:-1,2:])
+                valid = to_fill & (cnt > 0)
+                r_map  = np.where(valid, (sr / np.maximum(cnt, 1)).astype(np.int32), r_map)
+                c_map  = np.where(valid, (sc / np.maximum(cnt, 1)).astype(np.int32), c_map)
+                filled = filled | valid
+            # Any still-unmapped pixel (isolated dot) → self
+            r_map = np.where(r_map < 0, ri, r_map)
+            c_map = np.where(c_map < 0, ci, c_map)
+            return r_map, c_map
+
+    @staticmethod
     def _make_back_texture(img_np, char_mask):
         """
-        Builds a coherent backside texture via silhouette-ring inpainting.
+        Builds a coherent backside texture using the same 3-pixel inset
+        ring used for UV insetting.
 
-        Algorithm:
-          1. Erode char_mask by 1 pixel → find the inner silhouette ring.
-          2. For every character pixel, sample the color of its nearest
-             ring pixel in the FRONT image (nearest-neighbor via EDT).
-             → orange body maps to orange back, black hair to black back.
-          3. Gaussian blur (r=1.5) + 15 % grey desaturation.
-
-        No left-right flip is performed, so front belly colors cannot
-        accidentally dominate the back.
+        Every back pixel inherits the color of the nearest solidly-interior
+        front pixel (>= 3px from the silhouette boundary).  This eliminates
+        anti-aliased edge colors and ensures the back matches the seam UVs:
+        solid orange body → orange back, solid black hair → black back.
         """
         import numpy as np
         from PIL import Image as _PIL, ImageFilter as _IFB
 
-        char = char_mask  # True = character pixel
+        char = char_mask
 
-        # ── 1. Silhouette ring (1-pixel erosion) ──────────────────────
-        char_pil = _PIL.fromarray((char * 255).astype(np.uint8))
-        try:
-            from PIL.ImageFilter import MinFilter
-            eroded = np.array(char_pil.filter(MinFilter(3)), dtype=bool)
-        except Exception:
-            eroded = char
-        ring = char & ~eroded
-        if not ring.any():
-            ring = char     # degenerate case (tiny image): use full silhouette
+        # ── 1. Map every pixel to its nearest solid-interior pixel ────
+        row_ins, col_ins = ThreeDViewerWidget._compute_inset_map(char, inset_px=3)
 
-        # ── 2. Nearest-ring color for every pixel ─────────────────────
-        try:
-            from scipy.ndimage import distance_transform_edt
-            _, nn = distance_transform_edt(~ring, return_indices=True)
-            back_fill = img_np[nn[0], nn[1]]            # (gh, gw, 3)
-        except ImportError:
-            # Fallback: iterative 4-connected dilation outward from ring
-            back_fill = img_np * ring[:, :, None]
-            filled    = ring.copy()
-            for _ in range(img_np.shape[0] + img_np.shape[1]):
-                pad_c = np.pad(back_fill, ((1,1),(1,1),(0,0)), constant_values=0.0)
-                pad_f = np.pad(filled.astype(np.float32), 1,   constant_values=0.0)
-                nbr_c = (pad_c[:-2,1:-1] + pad_c[2:,1:-1] +
-                         pad_c[1:-1,:-2] + pad_c[1:-1,2:])
-                nbr_n = (pad_f[:-2,1:-1] + pad_f[2:,1:-1] +
-                         pad_f[1:-1,:-2] + pad_f[1:-1,2:])
-                to_fill = char & ~filled & (nbr_n > 0)
-                if not to_fill.any():
-                    break
-                avg       = nbr_c / np.maximum(nbr_n[:,:,None], 1.0)
-                back_fill = np.where(to_fill[:,:,None], avg, back_fill)
-                filled    = filled | to_fill
+        # ── 2. Sample solid-interior color for every character pixel ──
+        back_fill = img_np[row_ins, col_ins] * char[:, :, None]
 
-        # ── 3. Smooth + slight desaturation ───────────────────────────
-        fill_pil = _PIL.fromarray((back_fill * 255).astype(np.uint8))
-        fill_pil = fill_pil.filter(_IFB.GaussianBlur(radius=1.5))
-        back     = np.array(fill_pil, dtype=np.float32) / 255.0
-        gray     = back.mean(axis=2, keepdims=True)
-        back     = (back * 0.85 + gray * 0.15).clip(0.0, 1.0)
+        # ── 3. Slight blur + desaturation to read as "the back" ───────
+        pil  = _PIL.fromarray((back_fill * 255).astype(np.uint8))
+        pil  = pil.filter(_IFB.GaussianBlur(radius=1.5))
+        back = np.array(pil, dtype=np.float32) / 255.0
+        gray = back.mean(axis=2, keepdims=True)
+        back = (back * 0.85 + gray * 0.15).clip(0.0, 1.0)
 
-        # Apply only inside the character region; leave background zero
         return np.where(char[:, :, None], back, 0.0)
 
     def _draw(self):
@@ -3715,12 +3743,29 @@ class ThreeDViewerWidget(QWidget):
         img_np  = self._img_np                         # (gh, gw, 3) float32
         back_np = self._back_np if hasattr(self, '_back_np') else img_np[:, ::-1]
 
+        # ── UV inset map ───────────────────────────────────────
+        # For each grid position (i,j) this maps to the nearest pixel that
+        # is >= 3 px deep inside the character silhouette.  Boundary pixels
+        # (anti-aliased fringe) are redirected to their nearest solid-
+        # interior neighbour; interior pixels map to themselves (no change).
+        # Using these redirected coordinates in the UV formula forces seam
+        # and boundary vertices to sample solid, non-halo colors.
+        _INSET_PX = 3
+        if mask is not None:
+            row_ins, col_ins = ThreeDViewerWidget._compute_inset_map(
+                ~mask, inset_px=_INSET_PX)
+        else:
+            row_ins = np.tile(np.arange(gh)[:, None], (1, gw)).astype(np.int32)
+            col_ins = np.tile(np.arange(gw)[None, :], (gh, 1)).astype(np.int32)
+
         # ── 1. Build vertex + UV lists ─────────────────────────
         # Index grids: -1 where vertex is absent (NaN / background).
         front_idx = np.full((gh, gw), -1, dtype=np.int32)
         back_idx  = np.full((gh, gw), -1, dtype=np.int32)
 
         verts, uvs = [], []
+        _gw1 = max(gw - 1, 1)
+        _gh1 = max(gh - 1, 1)
 
         # Front vertices
         for i in range(gh):
@@ -3730,9 +3775,10 @@ class ThreeDViewerWidget(QWidget):
                     verts.append((float(self._XX[i, j]),
                                   float(self._YY[i, j]),
                                   float(ZZ[i, j])))
-                    # Atlas left-half UV  [u=0..0.5]
-                    uvs.append((j / max(gw - 1, 1) * 0.5,
-                                1.0 - i / max(gh - 1, 1)))
+                    # Atlas left-half UV [u=0..0.5], inset to avoid halo
+                    ci, ri = int(col_ins[i, j]), int(row_ins[i, j])
+                    uvs.append((ci / _gw1 * 0.5,
+                                1.0 - ri / _gh1))
 
         n_front = len(verts)
 
@@ -3744,9 +3790,10 @@ class ThreeDViewerWidget(QWidget):
                     verts.append((float(self._XX[i, j]),
                                   float(self._YY[i, j]),
                                   float(ZZ_back[i, j])))
-                    # Atlas right-half UV [u=0.5..1.0]
-                    uvs.append((0.5 + j / max(gw - 1, 1) * 0.5,
-                                1.0 - i / max(gh - 1, 1)))
+                    # Atlas right-half UV [u=0.5..1.0], inset to avoid halo
+                    ci, ri = int(col_ins[i, j]), int(row_ins[i, j])
+                    uvs.append((0.5 + ci / _gw1 * 0.5,
+                                1.0 - ri / _gh1))
 
         # ── 2. Build face lists ────────────────────────────────
         faces = []
@@ -3916,6 +3963,136 @@ class ThreeDViewerWidget(QWidget):
                 for (a, b, c) in faces_obj_np:
                     # OBJ is 1-indexed; include UV index = vertex index
                     f.write(f"f {a+1}/{a+1} {b+1}/{b+1} {c+1}/{c+1}\n")
+
+    # ── STL Export (3D-print) ─────────────────────────────────
+    def export_stl(self, path: str, target_mm: float = 100.0):
+        """
+        Exports the current mesh as a binary STL file scaled so that the
+        longest bounding-box dimension equals *target_mm* millimetres.
+
+        STL carries no color or UV data; only vertices and face normals
+        are written.  The face list uses forward-wound seam faces only
+        (no backface duplicates) so the mesh stays manifold/watertight —
+        a hard requirement for FDM slicers such as Cura and PrusaSlicer.
+
+        Scale: 100 mm default → desktop-toy / enamel-pin size (~10 cm).
+        Slicers interpret STL units as mm, so 100 units ≡ 100 mm.
+        """
+        import numpy as np
+        import os
+
+        ZZ, ZZ_back, mask = self._compute_ZZ()
+        gh, gw = ZZ.shape
+
+        # ── Build vertices (no UVs needed for STL) ────────────
+        front_idx = np.full((gh, gw), -1, dtype=np.int32)
+        back_idx  = np.full((gh, gw), -1, dtype=np.int32)
+        verts     = []
+
+        for i in range(gh):
+            for j in range(gw):
+                if np.isfinite(ZZ[i, j]):
+                    front_idx[i, j] = len(verts)
+                    verts.append((float(self._XX[i, j]),
+                                  float(self._YY[i, j]),
+                                  float(ZZ[i, j])))
+        n_front = len(verts)
+
+        for i in range(gh):
+            for j in range(gw):
+                if np.isfinite(ZZ_back[i, j]):
+                    back_idx[i, j] = len(verts) - n_front
+                    verts.append((float(self._XX[i, j]),
+                                  float(self._YY[i, j]),
+                                  float(ZZ_back[i, j])))
+
+        # ── Build faces (manifold — forward seam only) ─────────
+        faces = []
+
+        for i in range(gh - 1):              # front
+            for j in range(gw - 1):
+                i0, i1 = front_idx[i, j], front_idx[i+1, j]
+                i2, i3 = front_idx[i, j+1], front_idx[i+1, j+1]
+                if i0 >= 0 and i1 >= 0 and i2 >= 0 and i3 >= 0:
+                    faces += [(i0, i2, i3), (i0, i3, i1)]
+
+        for i in range(gh - 1):              # back (reversed winding)
+            for j in range(gw - 1):
+                b0 = back_idx[i,   j  ]
+                b1 = back_idx[i+1, j  ]
+                b2 = back_idx[i,   j+1]
+                b3 = back_idx[i+1, j+1]
+                if b0 >= 0 and b1 >= 0 and b2 >= 0 and b3 >= 0:
+                    g0, g1 = b0+n_front, b1+n_front
+                    g2, g3 = b2+n_front, b3+n_front
+                    faces += [(g0, g3, g2), (g0, g1, g3)]
+
+        if mask is not None:                 # seam (forward only)
+            def _fq(ii, jj):
+                return (0 <= ii < gh-1 and 0 <= jj < gw-1 and
+                        front_idx[ii, jj] >= 0 and front_idx[ii+1, jj] >= 0 and
+                        front_idx[ii, jj+1] >= 0 and front_idx[ii+1, jj+1] >= 0)
+            for i in range(gh):
+                for j in range(gw - 1):
+                    if front_idx[i, j] < 0 or front_idx[i, j+1] < 0:
+                        continue
+                    above, below = _fq(i-1, j), _fq(i, j)
+                    if above == below:
+                        continue
+                    fi, fi1 = front_idx[i, j], front_idx[i, j+1]
+                    bi  = back_idx[i, j]   + n_front
+                    bi1 = back_idx[i, j+1] + n_front
+                    if above:
+                        faces += [(fi, bi1, fi1), (fi, bi, bi1)]
+                    else:
+                        faces += [(fi, fi1, bi1), (fi, bi1, bi)]
+            for i in range(gh - 1):
+                for j in range(gw):
+                    if front_idx[i, j] < 0 or front_idx[i+1, j] < 0:
+                        continue
+                    left, right = _fq(i, j-1), _fq(i, j)
+                    if left == right:
+                        continue
+                    fi, fi1 = front_idx[i, j], front_idx[i+1, j]
+                    bi  = back_idx[i,   j] + n_front
+                    bi1 = back_idx[i+1, j] + n_front
+                    if right:
+                        faces += [(fi, bi1, fi1), (fi, bi, bi1)]
+                    else:
+                        faces += [(fi, fi1, bi1), (fi, bi1, bi)]
+
+        verts_np = np.array(verts, dtype=np.float32)
+        faces_np = np.array(faces, dtype=np.int32)
+
+        # ── Scale to target_mm on the longest dimension ────────
+        lo, hi   = verts_np.min(axis=0), verts_np.max(axis=0)
+        max_dim  = float((hi - lo).max())
+        scale    = target_mm / max(max_dim, 1e-9)
+        verts_mm = verts_np * scale           # units are now millimetres
+
+        # ── Write binary STL ───────────────────────────────────
+        try:
+            import trimesh as _tm
+            mesh = _tm.Trimesh(vertices=verts_mm, faces=faces_np, process=False)
+            mesh.export(path)
+        except ImportError:
+            # stdlib-only fallback: write binary STL with struct
+            import struct
+            tv = verts_mm[faces_np]           # (N, 3, 3)  triangle vertices
+            e1 = tv[:, 1] - tv[:, 0]
+            e2 = tv[:, 2] - tv[:, 0]
+            normals = np.cross(e1, e2)
+            nlen = np.linalg.norm(normals, axis=1, keepdims=True)
+            normals = normals / np.where(nlen > 0, nlen, 1.0)
+            with open(path, 'wb') as f:
+                f.write(b'\x00' * 80)         # 80-byte header
+                f.write(struct.pack('<I', len(faces_np)))
+                for k in range(len(faces_np)):
+                    nx, ny, nz = normals[k]
+                    f.write(struct.pack('<3f', nx, ny, nz))
+                    for v in tv[k]:
+                        f.write(struct.pack('<3f', *v))
+                    f.write(struct.pack('<H', 0))
 
     # ─────────────────────────────────────────────────────────
 
@@ -4108,6 +4285,26 @@ class ThreeDModelDialog(QDialog):
         self._btn_export.setEnabled(False)
         ctrl.addWidget(self._btn_export)
 
+        # 3D-Druck STL-Export
+        self._btn_stl = QPushButton("🖨  Export for 3D Printing (.stl)")
+        self._btn_stl.setStyleSheet(
+            "QPushButton { background:#2a1a0a; color:#f0a830; border:1px solid #5a3a0a; "
+            "border-radius:4px; padding:8px; font-size:12px; } "
+            "QPushButton:hover { background:#3a2a0a; } "
+            "QPushButton:disabled { background:#1a1a1a; color:#444; border-color:#2a2a2a; }"
+        )
+        self._btn_stl.setToolTip(
+            "Exportiert das Mesh als binäres STL für 3D-Drucker-Slicer\n"
+            "(Cura, PrusaSlicer, Bambu Studio, …).\n\n"
+            "• Keine Farben / UVs — reine Geometrie\n"
+            "• Skaliert auf 100 mm längste Seite\n"
+            "• Watertight / manifold — druckfertig\n\n"
+            "Benötigt trimesh (empfohlen) oder nutzt stdlib-Fallback."
+        )
+        self._btn_stl.clicked.connect(self._export_stl)
+        self._btn_stl.setEnabled(False)
+        ctrl.addWidget(self._btn_stl)
+
         nav = QLabel("Steuerung:\n• Maus ziehen = Rotation\n• Mausrad = Zoom")
         nav.setStyleSheet("color:#555; font-size:9px;")
         ctrl.addWidget(nav)
@@ -4207,6 +4404,7 @@ class ThreeDModelDialog(QDialog):
         )
         self._right_lay.addWidget(self._viewer)
         self._btn_export.setEnabled(True)
+        self._btn_stl.setEnabled(True)
         self._lbl_status.setText(
             "✅ Modell bereit.\n"
             "Maus ziehen = Rotation | Mausrad = Zoom"
@@ -4295,6 +4493,25 @@ class ThreeDModelDialog(QDialog):
         except Exception as e:
             self._lbl_status.setText(f"❌ Export fehlgeschlagen:\n{e}")
             QMessageBox.critical(self, "Export-Fehler", str(e))
+
+    def _export_stl(self):
+        if self._viewer is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "3D-Druck STL exportieren", "", "STL-Datei (*.stl)"
+        )
+        if not path:
+            return
+        if not path.lower().endswith('.stl'):
+            path += '.stl'
+        self._lbl_status.setText("⏳ Exportiere STL …")
+        QApplication.processEvents()
+        try:
+            self._viewer.export_stl(path)
+            self._lbl_status.setText(f"✅ STL exportiert (100 mm):\n{path}")
+        except Exception as e:
+            self._lbl_status.setText(f"❌ STL-Export fehlgeschlagen:\n{e}")
+            QMessageBox.critical(self, "STL-Export-Fehler", str(e))
 
     def _show_depth_map(self):
         if self._depth_map is None:
