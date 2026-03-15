@@ -119,6 +119,16 @@ class Layer:
     def __init__(self, image, name=None,
                  opacity: int = 100, visible: bool = True,
                  x: int = 0, y: int = 0):
+        """
+        Erstellt eine neue Ebene.
+
+        Parameter:
+          image   – PIL-Image (wird automatisch nach RGBA konvertiert)
+          name    – Anzeigename; wenn None wird 'Ebene N' vergeben
+          opacity – Deckkraft 0–100 %
+          visible – Ob die Ebene sichtbar ist
+          x, y    – Offset-Position auf der Leinwand in Pixeln
+        """
         Layer._counter += 1
         self.image   = image.convert("RGBA") if image else None
         self.name    = name or f"Ebene {Layer._counter}"
@@ -414,17 +424,35 @@ class AIWorker(QThread):
     error_occurred = pyqtSignal(str)   # Sendet Fehlermeldung an UI
 
     def __init__(self, pil_image: "PILImage.Image"):
+        """
+        Erstellt den Worker mit einer Kopie des zu analysierenden Bildes.
+
+        Parameter:
+          pil_image – Das PIL-Bild, das von Moondream beschrieben werden soll.
+                      Eine Kopie wird gespeichert damit das Original nicht verändert wird.
+        """
         super().__init__()
         self.pil_image = pil_image.copy()
 
     def run(self):
+        """
+        Führt die KI-Analyse im Hintergrund-Thread aus.
+
+        Ablauf:
+          1. Bild auf 512×512 px verkleinern (schnellere Übertragung)
+          2. Als JPEG in Base64 kodieren
+          3. HTTP-POST an Ollama API (localhost:11434)
+          4. Antworttext per result_ready-Signal an die UI senden
+        """
         try:
             img = self.pil_image.copy()
+            # Bild für schnellere Übertragung an Ollama verkleinern
             img.thumbnail((512, 512), PILImage.LANCZOS)
             if img.mode != "RGB":
                 img = img.convert("RGB")
             buf = io.BytesIO()
             img.save(buf, format="JPEG", quality=85)
+            # JPEG-Bytes als Base64-String kodieren (Ollama erwartet dieses Format)
             b64 = base64.standard_b64encode(buf.getvalue()).decode("utf-8")
 
             payload = {
@@ -478,6 +506,13 @@ class CropOverlay(QWidget):
     cancelled      = pyqtSignal()        # ESC gedrückt
 
     def __init__(self, parent, mode: str = "rect"):
+        """
+        Erstellt das Crop-Overlay über dem angegebenen Eltern-Widget.
+
+        Parameter:
+          parent – Eltern-Widget (ImageCanvas); das Overlay bedeckt es vollständig
+          mode   – 'rect' für Rechteck-Auswahl, 'lasso' für Freihand-Polygon
+        """
         super().__init__(parent)
         self.mode      = mode          # "rect" oder "lasso"
         self.start_pt  = None          # Startpunkt (Rechteck)
@@ -494,13 +529,14 @@ class CropOverlay(QWidget):
         self.setFocus()
 
     def keyPressEvent(self, event):
-        """Escape → Abbruch."""
+        """Escape → Abbruch; sendet cancelled-Signal und schließt das Overlay."""
         if event.key() == Qt.Key.Key_Escape:
             self.cancelled.emit()
             self.close()
 
     # ── Rechteck-Modus ──────────────────────────
     def mousePressEvent(self, event):
+        """Linker Mausklick: Zeichnen beginnen, Start- und Endpunkt setzen."""
         if event.button() == Qt.MouseButton.LeftButton:
             self.drawing  = True
             self.start_pt = event.pos()
@@ -509,6 +545,7 @@ class CropOverlay(QWidget):
             self.update()
 
     def mouseMoveEvent(self, event):
+        """Mausbewegung: Endpunkt aktualisieren; im Lasso-Modus Punkt zur Liste hinzufügen."""
         if self.drawing:
             self.end_pt = event.pos()
             if self.mode == "lasso":
@@ -516,10 +553,16 @@ class CropOverlay(QWidget):
             self.update()
 
     def mouseReleaseEvent(self, event):
+        """
+        Maustaste losgelassen: Auswahl abschließen.
+        Ist die Auswahl groß genug, wird das entsprechende Signal gesendet.
+        Zu kleine Auswahl → cancelled-Signal.
+        """
         if event.button() == Qt.MouseButton.LeftButton and self.drawing:
             self.drawing = False
             if self.mode == "rect" and self.start_pt and self.end_pt:
                 rect = QRect(self.start_pt, self.end_pt).normalized()
+                # Mindestgröße 10×10 px damit keine versehentliche Auswahl entsteht
                 if rect.width() > 10 and rect.height() > 10:
                     self.rect_selected.emit(rect)
                 else:
@@ -579,6 +622,16 @@ class ShapePlacerOverlay(QWidget):
 
     def __init__(self, parent, shape_key: str, size: int,
                  color: QColor, zoom: float):
+        """
+        Erstellt das Shape-Placer-Overlay.
+
+        Parameter:
+          parent    – Eltern-Widget (ImageCanvas)
+          shape_key – Schlüssel der zu platzierenden Form aus SHAPE_LIBRARY
+          size      – Gewünschte Formgröße in Bildpixeln
+          color     – Zeichenfarbe (QColor)
+          zoom      – Aktueller Zoom-Faktor des Canvas (zum Umrechnen der Koordinaten)
+        """
         super().__init__(parent)
         self.shape_key  = shape_key
         self.shape_size = size
@@ -595,17 +648,22 @@ class ShapePlacerOverlay(QWidget):
         self.setFocus()
 
     def keyPressEvent(self, event):
+        """Escape → Abbruch; sendet cancelled-Signal und schließt das Overlay."""
         if event.key() == Qt.Key.Key_Escape:
             self.cancelled.emit(); self.close()
 
     def mouseMoveEvent(self, event):
-        """Mauszeiger verfolgen für Live-Vorschau."""
+        """Mauszeiger verfolgen für Live-Vorschau der Form unter dem Cursor."""
         self._mouse_pos = event.pos()
         self.update()
 
     def mousePressEvent(self, event):
+        """
+        Linker Mausklick: Form platzieren.
+        Overlay-Koordinaten werden durch zoom geteilt um echte Bildpixel zu erhalten.
+        """
         if event.button() == Qt.MouseButton.LeftButton:
-            # Overlay-Position → Bildkoordinaten
+            # Overlay-Position → Bildkoordinaten durch Division mit Zoom-Faktor
             ix = int(event.pos().x() / self.zoom)
             iy = int(event.pos().y() / self.zoom)
             self.shape_placed.emit(self.shape_key, ix, iy)
@@ -718,6 +776,18 @@ class DrawOverlay(QWidget):
 
     def __init__(self, parent, tool: str, color: QColor,
                  size: int, zoom: float, texture=None):
+        """
+        Erstellt das Zeichen-Overlay.
+
+        Parameter:
+          parent  – Eltern-Widget (ImageCanvas)
+          tool    – Werkzeug-Name: 'pen', 'brush', 'eraser', 'line', 'rect',
+                    'ellipse', 'text', 'blur', 'curve', 'texture_brush'
+          color   – Aktuelle Zeichenfarbe (QColor)
+          size    – Pinselgröße in Overlay-Pixeln
+          zoom    – Zoom-Faktor des Canvas (für Koordinatenumrechnung)
+          texture – Optional: PIL RGBA-Bild als Textur für den Textur-Pinsel
+        """
         super().__init__(parent)
         self.tool        = tool
         self.color       = color
@@ -757,12 +827,18 @@ class DrawOverlay(QWidget):
         self.setFocus()
 
     def keyPressEvent(self, event):
+        """Escape → Overlay schließen und Zeichenmodus beenden."""
         if event.key() == Qt.Key.Key_Escape:
             self.close()
 
     # ── Maus-Ereignisse ─────────────────────────
 
     def mousePressEvent(self, event):
+        """
+        Maustaste gedrückt: Zeichnen beginnen.
+        Für das Kurven-Werkzeug: Linksklick = Punkt hinzufügen, Rechtsklick = abschließen.
+        Für alle anderen Werkzeuge: Linksklick startet den Strich.
+        """
         # ── Kurven-Werkzeug: Links = Punkt hinzufügen, Rechts = Kurve abschließen
         if self.tool == "curve":
             if event.button() == Qt.MouseButton.LeftButton:
@@ -793,6 +869,12 @@ class DrawOverlay(QWidget):
             self._draw_point(event.pos())
 
     def mouseMoveEvent(self, event):
+        """
+        Mausbewegung verarbeiten:
+        - Freihand-Werkzeuge: Strich-Segment auf den Vorschau-Layer zeichnen
+        - Form-Werkzeuge (Linie, Rect, Ellipse): Nur Vorschau aktualisieren
+        - Kurven-Werkzeug: Live-Vorschau der Segment-Linie zur Mausposition
+        """
         if self.tool == "curve":
             # Live-Vorschau der letzten Segmentlinie (vor Klick)
             self.last_pt = event.pos()
@@ -813,6 +895,11 @@ class DrawOverlay(QWidget):
             self.update()
 
     def mouseReleaseEvent(self, event):
+        """
+        Maustaste losgelassen: Strich abschließen und PIL-Zeichenfunktion erzeugen.
+        Das drawing_done-Signal wird mit der Lambda-Funktion gesendet,
+        die später auf das PIL-Bild angewendet wird.
+        """
         if event.button() != Qt.MouseButton.LeftButton or not self.drawing:
             return
         self.drawing = False
@@ -873,6 +960,7 @@ class DrawOverlay(QWidget):
         return pen
 
     def _draw_point(self, pos: QPoint):
+        """Zeichnet einen einzelnen Punkt auf den Vorschau-Layer (z.B. beim ersten Klick)."""
         painter = QPainter(self._preview)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(self._pen_for_tool(self.tool, self.color, self.brush_size))
@@ -881,6 +969,7 @@ class DrawOverlay(QWidget):
         self.update()
 
     def _draw_line(self, p1: QPoint, p2: QPoint):
+        """Zeichnet ein Liniensegment zwischen zwei Punkten auf den Vorschau-Layer."""
         painter = QPainter(self._preview)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(self._pen_for_tool(self.tool, self.color, self.brush_size))
@@ -1083,12 +1172,17 @@ class DrawOverlay(QWidget):
         return draw
 
     def _do_text(self, pos: QPoint):
-        """Text-Tool: Dialog öffnen, Text auf Bild zeichnen."""
+        """
+        Text-Werkzeug: Öffnet einen Eingabe-Dialog und zeichnet den eingegebenen
+        Text an der angeklickten Bildposition.
+        Schriftgröße wird proportional zur Pinselgröße berechnet (size × 3, mindestens 12 pt).
+        """
         text, ok = QInputDialog.getText(self, "Text einfügen", "Text:")
         if ok and text:
             zoom = self.zoom
             color = self.color
             size = self.brush_size
+            # Klickposition von Overlay-Koordinaten in echte Bildpixel umrechnen
             x = int(pos.x() / zoom)
             y = int(pos.y() / zoom)
 
@@ -1097,9 +1191,10 @@ class DrawOverlay(QWidget):
                 font_size = max(12, int(size * 3))
                 try:
                     from PIL import ImageFont
+                    # System-Schriftart laden (macOS-Pfad; auf anderen Systemen Fallback auf Standardschrift)
                     font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", font_size)
                 except Exception:
-                    font = None
+                    font = None   # PIL nutzt intern eine Standardschrift
                 d.text((x, y), text,
                        fill=(color.red(), color.green(), color.blue(), 255),
                        font=font)
@@ -1128,6 +1223,16 @@ class TransformOverlay(QWidget):
     cancelled      = pyqtSignal()
 
     def __init__(self, parent, pil_img, layer_x: int, layer_y: int, zoom: float):
+        """
+        Erstellt das Transform-Overlay.
+
+        Parameter:
+          parent   – Eltern-Widget (ImageCanvas)
+          pil_img  – PIL RGBA-Bild der zu transformierenden Ebene
+          layer_x  – Aktuelle X-Position der Ebene in Bildpixeln
+          layer_y  – Aktuelle Y-Position der Ebene in Bildpixeln
+          zoom     – Aktueller Zoom-Faktor des Canvas
+        """
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self.setMouseTracking(True)
@@ -1168,11 +1273,13 @@ class TransformOverlay(QWidget):
     # ── Events ────────────────────────────────────────────────
 
     def mousePressEvent(self, event):
+        """Linker Mausklick: Verschieben beginnen; Startposition und -versatz merken."""
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start = event.pos()
             self._drag_orig  = (self._dx, self._dy)
 
     def mouseMoveEvent(self, event):
+        """Mausbewegung: Versatz relativ zum Startpunkt berechnen und Vorschau aktualisieren."""
         if self._drag_start is not None:
             delta = event.pos() - self._drag_start
             self._dx = self._drag_orig[0] + delta.x()
@@ -1180,10 +1287,16 @@ class TransformOverlay(QWidget):
             self.update()
 
     def mouseReleaseEvent(self, event):
+        """Maustaste losgelassen: Verschieben beenden."""
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start = None
 
     def wheelEvent(self, event):
+        """
+        Mausrad: Skalierung anpassen.
+        Faktor 1.1 pro Scroll-Schritt (10° = 1 Schritt).
+        Bereich 0.05–20× (5% bis 2000% des Originals).
+        """
         steps  = event.angleDelta().y() / 120
         factor = 1.1 ** steps
         self._scale = max(0.05, min(self._scale * factor, 20.0))
@@ -1191,8 +1304,13 @@ class TransformOverlay(QWidget):
         self.update()
 
     def keyPressEvent(self, event):
+        """
+        Enter → Transform bestätigen: Overlay-Verschiebung in Bildkoordinaten umrechnen
+        und transform_done-Signal senden.
+        Escape → Abbruch.
+        """
         if event.key() == Qt.Key.Key_Return or event.key() == Qt.Key.Key_Enter:
-            # Overlay-Verschiebung → Bildkoordinaten
+            # Overlay-Verschiebung → Bildkoordinaten durch Division mit Zoom-Faktor
             new_x = int(self._ox + self._dx / self._zoom)
             new_y = int(self._oy + self._dy / self._zoom)
             self.transform_done.emit(new_x, new_y, self._scale)
@@ -1202,6 +1320,7 @@ class TransformOverlay(QWidget):
             self.close()
 
     def paintEvent(self, _event):
+        """Zeichnet das skalierte Bild mit blauem Rahmen und Hinweis-Text auf das Overlay."""
         p = QPainter(self)
         r = self._screen_rect()
         # Bild zeichnen (mit Zoom)
@@ -1240,6 +1359,13 @@ class MovableRectOverlay(QWidget):
     _HS = 10   # Handle-Größe in Pixeln
 
     def __init__(self, parent, rect: QRect):
+        """
+        Erstellt das verschiebbare Auswahlrechteck.
+
+        Parameter:
+          parent – Eltern-Widget (ImageCanvas)
+          rect   – Initiales Auswahlrechteck in Overlay-Koordinaten
+        """
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self.setStyleSheet("background: transparent;")
@@ -1255,6 +1381,12 @@ class MovableRectOverlay(QWidget):
     # ── Handles ──────────────────────────────────────────────
 
     def _handles(self) -> dict:
+        """
+        Gibt ein Dictionary mit den 8 Skalierungs-Handles des Auswahlrechtecks zurück.
+        Jeder Handle ist ein kleines QRect an der entsprechenden Ecke oder Kante.
+        Schlüssel: 'tl', 'tm', 'tr', 'ml', 'mr', 'bl', 'bm', 'br'
+        (t=top, b=bottom, l=left, r=right, m=middle)
+        """
         r  = self._rect
         h  = self._HS
         cx = (r.left() + r.right())  // 2
@@ -1275,6 +1407,7 @@ class MovableRectOverlay(QWidget):
     }
 
     def _hit(self, pos: QPoint) -> str | None:
+        """Prüft ob ein Handle an der Mauszeigerposition liegt. Gibt Handle-Name oder None zurück."""
         for name, h in self._handles().items():
             if h.contains(pos): return name
         return None
@@ -1282,6 +1415,10 @@ class MovableRectOverlay(QWidget):
     # ── Events ────────────────────────────────────────────────
 
     def mousePressEvent(self, event):
+        """
+        Maustaste gedrückt: Modus bestimmen.
+        Handle getroffen → skalieren; Innenbereich → verschieben; außen → nichts.
+        """
         pos = event.pos()
         h   = self._hit(pos)
         if h:
@@ -1294,6 +1431,10 @@ class MovableRectOverlay(QWidget):
         self._orig_rect = QRect(self._rect)
 
     def mouseMoveEvent(self, event):
+        """
+        Mausbewegung: Cursor anpassen (kein Drag) oder Rechteck anpassen (während Drag).
+        Verschieben, Ecken und Kanten werden alle hier behandelt.
+        """
         pos = event.pos()
         if self._mode is None:
             h = self._hit(pos)
@@ -1322,9 +1463,11 @@ class MovableRectOverlay(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, _event):
+        """Maustaste losgelassen: Drag-Modus beenden."""
         self._mode = None
 
     def keyPressEvent(self, event):
+        """Enter → Zuschneiden bestätigen (sendet confirmed-Signal). Escape → Abbruch."""
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             self.confirmed.emit(self._rect)
             self.close()
@@ -1333,6 +1476,10 @@ class MovableRectOverlay(QWidget):
             self.close()
 
     def paintEvent(self, _event):
+        """
+        Zeichnet das Overlay: Außenbereich abgedunkelt (4 Rechtecke), Auswahlrahmen
+        gestrichelt, Skalierungs-Handles als blaue Quadrate, Hinweis-Leiste unten.
+        """
         p = QPainter(self)
         r = self._rect
         # Aussenbereich abdunkeln (4 Rechtecke um die Auswahl)
@@ -1375,6 +1522,13 @@ class MovableLassoOverlay(QWidget):
     cancelled = pyqtSignal()
 
     def __init__(self, parent, points: list):
+        """
+        Erstellt das verschiebbare Lasso-Overlay.
+
+        Parameter:
+          parent – Eltern-Widget (ImageCanvas)
+          points – Liste von QPoint-Objekten, die das Lasso-Polygon definieren
+        """
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self.setStyleSheet("background: transparent;")
@@ -1388,6 +1542,7 @@ class MovableLassoOverlay(QWidget):
         self.setFocus()
 
     def _poly_path(self) -> QPainterPath:
+        """Erstellt einen QPainterPath aus den Lasso-Punkten unter Berücksichtigung des aktuellen Versatzes."""
         path = QPainterPath()
         if not self._pts: return path
         ox, oy = self._offset.x(), self._offset.y()
@@ -1399,29 +1554,36 @@ class MovableLassoOverlay(QWidget):
         return path
 
     def _inside(self, pos: QPoint) -> bool:
+        """Prüft ob ein Punkt innerhalb des Lasso-Polygons liegt (für Drag-Erkennung)."""
         return self._poly_path().contains(QPointF(pos.x(), pos.y()))
 
     def mousePressEvent(self, event):
+        """Klick innerhalb des Polygons startet das Verschieben; außerhalb wird ignoriert."""
         if self._inside(event.pos()):
             self._drag_start = event.pos()
             self._drag_orig  = QPoint(self._offset)
 
     def mouseMoveEvent(self, event):
+        """Versatz des Polygons aktualisieren (Drag) oder Cursor-Form anpassen (kein Drag)."""
         if self._drag_start is not None:
             d = event.pos() - self._drag_start
             self._offset = self._drag_orig + d
             self.update()
         else:
+            # Cursor: Verschieben-Symbol innerhalb, Pfeil außerhalb
             cursor = Qt.CursorShape.SizeAllCursor if self._inside(event.pos()) \
                      else Qt.CursorShape.ArrowCursor
             self.setCursor(QCursor(cursor))
 
     def mouseReleaseEvent(self, _event):
+        """Drag beenden."""
         self._drag_start = None
 
     def keyPressEvent(self, event):
+        """Enter → Lasso mit aktuellem Versatz bestätigen. Escape → Abbruch."""
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             ox, oy = self._offset.x(), self._offset.y()
+            # Verschobene Punkte an confirmed-Signal übergeben
             self.confirmed.emit([QPoint(p.x()+ox, p.y()+oy) for p in self._pts])
             self.close()
         elif event.key() == Qt.Key.Key_Escape:
@@ -1429,6 +1591,7 @@ class MovableLassoOverlay(QWidget):
             self.close()
 
     def paintEvent(self, _event):
+        """Zeichnet das verschobene Lasso-Polygon mit gestricheltem Rahmen und Hinweis-Leiste."""
         p = QPainter(self)
         p.setPen(QPen(QColor("#4fc3f7"), 2, Qt.PenStyle.DashLine))
         p.setBrush(Qt.BrushStyle.NoBrush)
@@ -1466,6 +1629,15 @@ class MagicWandOverlay(QWidget):
     cancelled       = pyqtSignal()
 
     def __init__(self, parent, pil_image, tolerance: int, zoom: float):
+        """
+        Erstellt das Zauberstab-Overlay.
+
+        Parameter:
+          parent    – Eltern-Widget (ImageCanvas)
+          pil_image – PIL-Bild, auf dem die Farb-Auswahl durchgeführt wird
+          tolerance – Farb-Toleranz für den Flood-Fill (0 = exakt, 100 = sehr breit)
+          zoom      – Aktueller Zoom-Faktor des Canvas (für Koordinatenumrechnung)
+        """
         super().__init__(parent)
         self._pil      = pil_image.convert("RGBA")
         self._tol      = tolerance
@@ -1482,20 +1654,27 @@ class MagicWandOverlay(QWidget):
         self.setFocus()
 
     def keyPressEvent(self, event):
+        """Escape → Auswahl abbrechen. Enter → Maske bestätigen und an ImageEditor übergeben."""
         if event.key() == Qt.Key.Key_Escape:
             self.cancelled.emit(); self.close()
         elif event.key() == Qt.Key.Key_Return:
             self.selection_ready.emit(self._mask); self.close()
 
     def mousePressEvent(self, event):
+        """
+        Klick auf das Bild: Flood-Fill ab der angeklickten Position ausführen.
+        Shift-gedrückt: bestehende Auswahl erweitern (additive Auswahl).
+        Ohne Shift: neue Auswahl ersetzen die alte.
+        """
         if event.button() != Qt.MouseButton.LeftButton:
             return
+        # Overlay-Koordinaten in echte Bildpixel umrechnen (Zoom-Korrektur)
         ix = max(0, min(int(event.pos().x() / self._zoom), self._pil.width  - 1))
         iy = max(0, min(int(event.pos().y() / self._zoom), self._pil.height - 1))
         add = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
         new_mask = self._flood_fill(ix, iy)
         if add:
-            # Additive Auswahl: Vereinigung beider Masken
+            # Additive Auswahl: Vereinigung beider Masken (heller Wert gewinnt)
             self._mask = ImageChops.lighter(self._mask, new_mask)
         else:
             self._mask = new_mask
@@ -1528,6 +1707,7 @@ class MagicWandOverlay(QWidget):
         self._ovr_pix = pil_to_qpixmap(ovr.resize((sw, sh), PILImage.Resampling.NEAREST))
 
     def paintEvent(self, event):
+        """Zeichnet das blaue Auswahl-Overlay und den Bedienungs-Hinweis-Text."""
         painter = QPainter(self)
         if self._ovr_pix:
             painter.drawPixmap(0, 0, self._ovr_pix)
@@ -1557,6 +1737,7 @@ class HistogramWidget(QWidget):
     Unterbelichtung (Häufung links), Farbstiche (Kanal-Ungleichgewicht).
     """
     def __init__(self):
+        """Erstellt das Histogramm-Widget mit dunklem Hintergrund und fester Höhe."""
         super().__init__()
         self._data = None   # tuple (r_list, g_list, b_list, max_val)
         self.setFixedHeight(90)
@@ -1656,12 +1837,18 @@ class LayerPanel(QWidget):
     """
 
     def __init__(self, editor):
+        """
+        Erstellt das Ebenen-Panel.
+        Parameter:
+          editor – Referenz auf den ImageEditor (für Zugriff auf layers und active_layer_idx)
+        """
         super().__init__()
         self.editor = editor
         self.setStyleSheet("background:#1a1a1a; color:#ddd;")
         self._build_ui()
 
     def _build_ui(self):
+        """Erstellt die Button-Leiste und den scrollbaren Ebenen-Listen-Container."""
         main = QVBoxLayout(self)
         main.setContentsMargins(4, 4, 4, 4)
         main.setSpacing(4)
@@ -1863,6 +2050,7 @@ class LayerPanel(QWidget):
         ed._start_layer_transform(idx)
 
     def _select(self, idx: int):
+        """Aktiviert eine Ebene und aktualisiert das Original-PIL für den Slider-Reset."""
         ed = self.editor
         ed.active_layer_idx = idx
         if ed.layers[idx].image:
@@ -1871,11 +2059,13 @@ class LayerPanel(QWidget):
         self.refresh()
 
     def _toggle_vis(self, idx: int):
+        """Schaltet die Sichtbarkeit der Ebene um und aktualisiert die Anzeige."""
         self.editor.layers[idx].visible = not self.editor.layers[idx].visible
         self.editor._update_display()
         self.refresh()
 
     def _set_opacity(self, idx: int, value: int):
+        """Setzt die Deckkraft (0–100%) der Ebene und aktualisiert die Anzeige."""
         self.editor.layers[idx].opacity = value
         self.editor._update_display()
 
@@ -1929,6 +2119,7 @@ class LayerPanel(QWidget):
         self.refresh()
 
     def _add_transparent(self):
+        """Öffnet einen Dialog für benutzerdefinierte Breite/Höhe und fügt eine transparente Ebene hinzu."""
         ed = self.editor
         dlg = QDialog(self)
         dlg.setWindowTitle("Transparente Ebene")
@@ -1960,6 +2151,7 @@ class LayerPanel(QWidget):
         self.refresh()
 
     def _delete(self, idx: int):
+        """Löscht die Ebene mit dem angegebenen Index (mindestens eine Ebene bleibt erhalten)."""
         ed = self.editor
         if len(ed.layers) <= 1:
             QMessageBox.information(self, "Info",
@@ -2030,6 +2222,12 @@ class FilterPreviewDialog(QDialog):
     und als dict {filtername: QPixmap} übergeben.
     """
     def __init__(self, parent, previews: dict):
+        """
+        Erstellt den Filter-Vorschau-Dialog.
+        Parameter:
+          parent   – Eltern-Widget
+          previews – Dict {filtername: QPixmap} mit vorberechneten Thumbnails
+        """
         super().__init__(parent)
         self.setWindowTitle("🖼  Filter-Vorschau — alle Filter auf einen Blick")
         self.setModal(True)
@@ -2108,6 +2306,7 @@ class FilterPreviewDialog(QDialog):
         layout.addWidget(btn_cancel, alignment=Qt.AlignmentFlag.AlignRight)
 
     def _select(self, name: str):
+        """Speichert den gewählten Filternamen und schließt den Dialog mit Accept."""
         self.chosen_filter = name
         self.accept()
 
@@ -2118,6 +2317,10 @@ class FilterPreviewDialog(QDialog):
 # ══════════════════════════════════════════════════════════════
 
 def _cf_sepia(img):
+    """
+    Sepia-Filter für Collage-Zellen: Graustufenbild mit bräunlichem Ton.
+    Rot-Kanal +10%, Grün-Kanal -10%, Blau-Kanal -30% → warmer Vintage-Look.
+    """
     g = ImageOps.grayscale(img.convert("RGB"))
     return PILImage.merge("RGB", (
         g.point([min(255, int(x * 1.1)) for x in range(256)]),
@@ -2126,6 +2329,10 @@ def _cf_sepia(img):
     )).convert("RGBA")
 
 def _cf_cool(img):
+    """
+    Kühler-Ton-Filter für Collage-Zellen: Rot -20, Blau +30.
+    Simuliert einen Kälte- oder Morgengrauen-Farbstich.
+    """
     r, g, b, *a = img.convert("RGBA").split()
     alpha = a[0] if a else PILImage.new("L", img.size, 255)
     return PILImage.merge("RGBA", (
@@ -2133,6 +2340,10 @@ def _cf_cool(img):
         b.point([min(255, x + 30) for x in range(256)]), alpha))
 
 def _cf_warm(img):
+    """
+    Warmer-Ton-Filter für Collage-Zellen: Rot +30, Blau -20.
+    Simuliert Sonnenuntergangs- oder Kerzenlicht-Farbstich.
+    """
     r, g, b, *a = img.convert("RGBA").split()
     alpha = a[0] if a else PILImage.new("L", img.size, 255)
     return PILImage.merge("RGBA", (
@@ -2140,23 +2351,33 @@ def _cf_warm(img):
         b.point([max(0, x - 20) for x in range(256)]), alpha))
 
 def _cf_psychedelic(img):
+    """
+    Psychedelic-Filter für Collage-Zellen: Kanal-Rotation (R→G, G→B, B→R)
+    mit 3× Sättigungs-Verstärkung für extreme Farbverfälschung.
+    """
     r, g, b, *a = img.convert("RGBA").split()
     alpha = a[0] if a else PILImage.new("L", img.size, 255)
     result = PILImage.merge("RGBA", (g, b, r, alpha))
     return ImageEnhance.Color(result).enhance(3.0)
 
 def _cf_kaleidoscope(img):
+    """
+    Kaleidoskop-Filter für Collage-Zellen:
+    Linke Hälfte spiegeln → obere Hälfte spiegeln → 4-fach-Symmetrie.
+    """
     img = img.convert("RGBA")
     w, h = img.size
     hf_w = w // 2
     left = img.crop((0, 0, hf_w, h))
     top  = PILImage.new("RGBA", (w, h))
     top.paste(left, (0, 0))
+    # Gespiegelte rechte Hälfte erzeugen
     top.paste(ImageOps.mirror(left), (hf_w, 0))
     hf_h     = h // 2
     top_half = top.crop((0, 0, w, hf_h))
     result   = PILImage.new("RGBA", (w, h))
     result.paste(top_half, (0, 0))
+    # Gespiegelte untere Hälfte erzeugen
     result.paste(ImageOps.flip(top_half), (0, hf_h))
     return result
 
@@ -2188,12 +2409,25 @@ class GifEditorDialog(QDialog):
     b) ⭐ Sternschauer          – goldene Sterne fallen von einem Punkt
     c) 🎬 Pfad-Animation        – Ebene bewegt sich entlang eines Pfades
     d) 🌊 Parallax-GIF          – Ebenen schwingen mit Tiefen-Versatz (3D-Effekt)
+
+    Workflow:
+      1. Modus wählen (RadioButton)
+      2. Parameter einstellen (SpinBoxen)
+      3. 'GIF generieren' → Frames werden berechnet und in Vorschau angezeigt
+      4. 'Als GIF exportieren' oder 'Als Video exportieren'
     """
 
     _PW, _PH = 480, 320        # Vorschau-Größe in Pixeln
     _GOLD    = (255, 210, 0, 255)
 
     def __init__(self, parent, editor):
+        """
+        Erstellt den GIF-Editor-Dialog.
+
+        Parameter:
+          parent – Eltern-Widget (ImageEditor-Hauptfenster)
+          editor – Referenz auf den ImageEditor (für Ebenen-Zugriff)
+        """
         super().__init__(parent)
         self.editor       = editor
         self.frames: list = []
@@ -2212,6 +2446,7 @@ class GifEditorDialog(QDialog):
     # ── UI-Aufbau ────────────────────────────────────────────
 
     def _build_ui(self):
+        """Erstellt die gesamte UI des GIF-Editors: linke Steuerseite + rechte Vorschau."""
         root = QHBoxLayout(self)
         root.setSpacing(10)
 
@@ -2328,6 +2563,7 @@ class GifEditorDialog(QDialog):
     # ── Parameter-Panels ─────────────────────────────────────
 
     def _panel_vhs(self) -> QWidget:
+        """Erstellt das Parameter-Panel für den VHS-Distortion-Modus (Intensitäts-Spinner)."""
         w = QWidget(); l = QVBoxLayout(w)
         info = QLabel("Bild wechselt zwischen Normal und Verzerrt.\n"
                       "Intensität steuert Stärke der Störungen.")
@@ -2343,6 +2579,7 @@ class GifEditorDialog(QDialog):
         return w
 
     def _panel_star(self) -> QWidget:
+        """Erstellt das Parameter-Panel für den Sternschauer-Modus (Anzahl, Größe, Startpunkt)."""
         w = QWidget(); l = QVBoxLayout(w)
         info = QLabel("Goldene Sterne fallen vom gewählten Punkt.\n"
                       "Klick auf Vorschau = Startpunkt festlegen.\n"
@@ -2372,6 +2609,7 @@ class GifEditorDialog(QDialog):
         return w
 
     def _panel_path(self) -> QWidget:
+        """Erstellt das Parameter-Panel für den Pfad-Animations-Modus (Wegpunkte + Ebenenauswahl)."""
         w = QWidget(); l = QVBoxLayout(w)
         info = QLabel("Ebene bewegt sich entlang eines Pfades.\n"
                       "Klick auf Vorschau = Wegpunkte hinzufügen.\n"
@@ -2398,6 +2636,7 @@ class GifEditorDialog(QDialog):
         return w
 
     def _panel_parallax(self) -> QWidget:
+        """Erstellt das Parameter-Panel für den Parallax-Modus (Amplitude, Schwingungen, Richtung)."""
         w = QWidget(); l = QVBoxLayout(w)
         info = QLabel("Jede Ebene schwingt mit unterschiedlicher\n"
                       "Amplitude – tiefere Ebenen bewegen sich\n"
@@ -2429,6 +2668,7 @@ class GifEditorDialog(QDialog):
     # ── Vorschau ─────────────────────────────────────────────
 
     def _refresh_base(self):
+        """Aktualisiert das zusammengesetzte Basis-Bild aus allen Ebenen des Editors."""
         self._base_pil = self.editor._composite_layers()
         self._draw_preview_overlay()
 
@@ -2497,6 +2737,7 @@ class GifEditorDialog(QDialog):
         self._draw_preview_overlay()
 
     def _clear_path(self):
+        """Löscht alle gesetzten Pfadpunkte und aktualisiert die Vorschau."""
         self._path_pts.clear()
         self._lbl_path.setText("Pfad: 0 Punkte")
         self._draw_preview_overlay()
@@ -2504,6 +2745,7 @@ class GifEditorDialog(QDialog):
     # ── Frame-Vorschau ────────────────────────────────────────
 
     def _show_frame(self, idx: int):
+        """Zeigt den Frame mit Index idx (zyklisch) als Thumbnail in der Vorschau an."""
         if not self.frames: return
         idx = idx % len(self.frames)
         self._cur_fi = idx
@@ -2519,6 +2761,7 @@ class GifEditorDialog(QDialog):
     # ── Generator ─────────────────────────────────────────────
 
     def _generate(self):
+        """Generiert die GIF-Frames je nach gewähltem Modus und zeigt den ersten Frame in der Vorschau."""
         if self._rb_vhs.isChecked():
             self.frames = self._gen_vhs()
         elif self._rb_star.isChecked():
@@ -2533,6 +2776,7 @@ class GifEditorDialog(QDialog):
     # ── a) VHS-Distortion-Loop ────────────────────────────────
 
     def _gen_vhs(self) -> list:
+        """Generiert VHS-Distortion-Frames: gerade Frames zeigen das Original, ungerade verzerrt."""
         import random
         base   = self.editor._composite_layers().convert("RGB")
         n      = self._sp_frames.value()
@@ -2545,6 +2789,12 @@ class GifEditorDialog(QDialog):
 
     @staticmethod
     def _vhs_frame(img, rng, intensity: int):
+        """
+        Erzeugt einen VHS-verzerrten Frame.
+        Gerade Zeilen werden abgedunkelt, dann werden zufällige horizontale
+        Bänder verschoben und aufgehellt, und abschließend werden die
+        Farbkanäle R und B leicht gegeneinander verschoben (Chroma-Shift).
+        """
         img  = img.copy().convert("RGB")
         w, h = img.size
         pixels = list(img.getdata())
@@ -2583,6 +2833,11 @@ class GifEditorDialog(QDialog):
     # ── b) Sternschauer ───────────────────────────────────────
 
     def _gen_stars(self) -> list:
+        """
+        Generiert Sternschauer-Frames.
+        Goldene Sterne fallen vom Startpunkt nach unten, schwingen dabei
+        sinusförmig horizontal und sammeln sich am unteren Bildrand.
+        """
         import random, math
         # ── Validation ────────────────────────────────────────
         s_min = self._sp_s_min.value(); s_max = self._sp_s_max.value()
@@ -2638,6 +2893,7 @@ class GifEditorDialog(QDialog):
 
     @staticmethod
     def _star5(draw, cx, cy, r_outer):
+        """Zeichnet einen goldenen 5-Zack-Stern mit Mittelpunkt (cx, cy) und Außenradius r_outer."""
         import math
         r_inner = r_outer * 0.42
         pts = []
@@ -2650,6 +2906,12 @@ class GifEditorDialog(QDialog):
     # ── c) Pfad-Animation ─────────────────────────────────────
 
     def _gen_path(self) -> list:
+        """
+        Generiert Pfad-Animations-Frames.
+        Die ausgewählte Ebene bewegt sich entlang eines Catmull-Rom-Splines,
+        der aus den gesetzten Wegpunkten berechnet wird.
+        Das Objekt rotiert dabei entsprechend der Tangentenrichtung des Pfades.
+        """
         import math
         if len(self._path_pts) < 2:
             QMessageBox.warning(self, "Pfad",
@@ -2777,6 +3039,7 @@ class GifEditorDialog(QDialog):
     # ── Export ────────────────────────────────────────────────
 
     def _export(self):
+        """Exportiert die generierten Frames als GIF-Datei, optional mit zugeschnittenem Sound."""
         if not self.frames:
             QMessageBox.warning(self, "Export",
                 "Bitte zuerst 'GIF generieren' klicken."); return
@@ -2989,10 +3252,19 @@ class DepthWorker(QThread):
     error       = pyqtSignal(str)
 
     def __init__(self, pil_image):
+        """
+        Erstellt den DepthWorker.
+        Parameter:
+          pil_image – PIL-Bild, für das eine Tiefenkarte berechnet werden soll.
+        """
         super().__init__()
         self.pil_image = pil_image
 
     def run(self):
+        """
+        Führt die Tiefenschätzung im Hintergrund aus.
+        Normalisiert das Ergebnis auf 0–1 und sendet es per depth_ready-Signal.
+        """
         try:
             import numpy as np
             raw = self._estimate()
@@ -3026,6 +3298,10 @@ class DepthWorker(QThread):
     )
 
     def _estimate(self):
+        """
+        Versucht nacheinander Depth-Anything-V2 (Subprocess), dann Luminanz-Approximation.
+        Gibt ein numpy float32-Array mit rohen Tiefenwerten zurück.
+        """
         import sys, os, subprocess, tempfile
         import numpy as np
 
@@ -3083,6 +3359,11 @@ class NovelViewWorker(QThread):
     error       = pyqtSignal(str)
 
     def __init__(self, pil_image):
+        """
+        Erstellt den NovelViewWorker.
+        Parameter:
+          pil_image – PIL-Bild, für das eine KI-Rückseite generiert werden soll.
+        """
         super().__init__()
         self.pil_image = pil_image
 
@@ -3121,6 +3402,7 @@ class NovelViewWorker(QThread):
     )
 
     def run(self):
+        """Startet die KI-Rückseitengenerierung und sendet das Ergebnis-Bild per views_ready-Signal."""
         try:
             back = self._zero123plus()
             self.views_ready.emit(back)
@@ -3129,6 +3411,11 @@ class NovelViewWorker(QThread):
 
     # ── zero123plus-v1.1 im Subprocess ───────────────────────
     def _zero123plus(self):
+        """
+        Führt zero123plus-v1.1 in einem separaten Python-Prozess aus.
+        Speichert Eingabe- und Ausgabebild als temporäre Dateien und
+        gibt das resultierende Rückseitenbild als PIL-Image zurück.
+        """
         import sys, os, subprocess, tempfile
 
         img_tmp = out_tmp = None
@@ -3159,6 +3446,10 @@ class NovelViewWorker(QThread):
 
     # ── (veraltet — Zero-1-to-3 XL entfernt aus diffusers 0.28+) ─
     def _zero1to3(self):
+        """
+        Veraltete Methode: nutzt Zero-1-to-3 XL (nicht mehr in diffusers 0.28+).
+        Generiert Rückseite bei azimuth=180° und skaliert auf Originalgröße.
+        """
         import torch
         from diffusers import Zero1to3StableDiffusionPipeline
 
@@ -3205,6 +3496,17 @@ class ThreeDViewerWidget(QWidget):
 
     def __init__(self, pil_image, depth_map, depth_scale=0.3, invert=False,
                  show_back=True, parent=None):
+        """
+        Erstellt den 3D-Viewer.
+
+        Parameter:
+          pil_image   – Originalbild für die Textur
+          depth_map   – Tiefenkarte als numpy float32 Array (0–1, normalisiert)
+          depth_scale – Stärke der Z-Auslenkung im Mesh
+          invert      – Tiefenkarte invertieren (nah/fern tauschen)
+          show_back   – Rückseite des Meshs anzeigen
+          parent      – optionales Eltern-Widget
+        """
         super().__init__(parent)
         self.pil_image   = pil_image
         self.depth_map   = depth_map
@@ -3218,6 +3520,11 @@ class ThreeDViewerWidget(QWidget):
         self._init_plot()
 
     def _init_plot(self):
+        """
+        Initialisiert das Matplotlib-3D-Plot-Widget.
+        Skaliert Bild und Tiefenkarte auf max. 150×150 Gitterpunkte,
+        erstellt das XY-Meshgrid und ruft _draw() auf.
+        """
         import numpy as np
 
         # matplotlib-Canvas einbinden (backend_qtagg seit matplotlib 3.6)
@@ -3492,6 +3799,11 @@ class ThreeDViewerWidget(QWidget):
             return np.where(char[:, :, None], back, 0.0)
 
     def _draw(self):
+        """
+        Zeichnet das vollständige 3D-Mesh in der Matplotlib-Figure.
+        Baut Front- und Rückseiten-Dreiecke, Seam-Dreiecke am Silhouettenrand
+        und rendert alle als Poly3DCollection mit eingebetteten Farben.
+        """
         if self._fig is None or self._canvas is None:
             return
         import numpy as np
@@ -4126,6 +4438,7 @@ class ThreeDViewerWidget(QWidget):
 
     def update_depth_scale(self, scale: float, invert: bool = False,
                            show_back: bool = True):
+        """Aktualisiert Tiefenskala, Invertierung und Rückseiteneinstellung und rendert neu."""
         self.depth_scale = scale
         self.invert      = invert
         self.show_back   = show_back
@@ -4174,6 +4487,12 @@ class ThreeDModelDialog(QDialog):
     """
 
     def __init__(self, parent, editor):
+        """
+        Erstellt den 3D-Modell-Dialog.
+        Parameter:
+          parent – Eltern-Widget (ImageEditor-Hauptfenster)
+          editor – Referenz auf den ImageEditor (für Ebenen-Zugriff)
+        """
         super().__init__(parent)
         self.editor   = editor
         self._worker:       "DepthWorker | None"     = None
@@ -4189,6 +4508,7 @@ class ThreeDModelDialog(QDialog):
         self._build_ui()
 
     def _build_ui(self):
+        """Erstellt die vollständige UI des 3D-Dialogs (Steuerseite + 3D-Viewer-Container)."""
         root = QHBoxLayout(self)
         root.setSpacing(10)
 
@@ -4396,6 +4716,7 @@ class ThreeDModelDialog(QDialog):
             pass
 
     def _start(self):
+        """Startet die Tiefenschätzung für das aktuelle Compositebild im Hintergrund-Thread."""
         if not self.editor.layers:
             return
 
@@ -4422,6 +4743,7 @@ class ThreeDModelDialog(QDialog):
         self._worker.start()
 
     def _on_depth_ready(self, depth_map):
+        """Empfängt die fertige Tiefenkarte vom Worker und initialisiert den 3D-Viewer."""
         self._depth_map = depth_map
         self._btn_show_depth.setEnabled(True)
         self._btn_ai_back.setEnabled(True)
@@ -4429,6 +4751,7 @@ class ThreeDModelDialog(QDialog):
         self._show_viewer()
 
     def _show_viewer(self):
+        """Erstellt einen neuen ThreeDViewerWidget und ersetzt den Platzhalter im Container."""
         scale = self._depth_slider.value() / 100.0
 
         # Alten Viewer aus Container entfernen
@@ -4459,12 +4782,14 @@ class ThreeDModelDialog(QDialog):
         )
 
     def _on_depth_slider(self, val: int):
+        """Aktualisiert die Tiefen-Skalierung im Viewer wenn der Slider bewegt wird."""
         if self._viewer:
             self._viewer.update_depth_scale(val / 100.0,
                                             self._chk_invert.isChecked(),
                                             self._chk_back.isChecked())
 
     def _on_invert_changed(self):
+        """Aktualisiert den 3D-Viewer wenn 'Tiefe invertieren' oder 'Rückseite' geändert wird."""
         if self._viewer:
             self._viewer.update_depth_scale(self._depth_slider.value() / 100.0,
                                             self._chk_invert.isChecked(),
@@ -4502,6 +4827,7 @@ class ThreeDModelDialog(QDialog):
             self._lbl_status.setText("✅ KI-Rückseite bereit (3D-Modell noch nicht erstellt).")
 
     def _on_novel_view_error(self, msg: str):
+        """Zeigt eine Fehlermeldung wenn die KI-Rückseitengenerierung fehlschlägt."""
         self._btn_ai_back.setEnabled(True)
         self._lbl_status.setText(f"❌ KI-Rückseite fehlgeschlagen.")
         QMessageBox.critical(
@@ -4514,6 +4840,7 @@ class ThreeDModelDialog(QDialog):
         )
 
     def _export_3d(self):
+        """Exportiert das aktuelle 3D-Mesh als GLB oder OBJ-Datei."""
         if self._viewer is None:
             return
         try:
@@ -4543,6 +4870,7 @@ class ThreeDModelDialog(QDialog):
             QMessageBox.critical(self, "Export-Fehler", str(e))
 
     def _export_stl(self):
+        """Exportiert das Mesh als druckfertiges binäres STL (100 mm längste Seite)."""
         if self._viewer is None:
             return
         path, _ = QFileDialog.getSaveFileName(
@@ -4562,6 +4890,7 @@ class ThreeDModelDialog(QDialog):
             QMessageBox.critical(self, "STL-Export-Fehler", str(e))
 
     def _show_depth_map(self):
+        """Zeigt die berechnete Tiefenkarte in einem separaten Dialog (hell = nah, dunkel = fern)."""
         if self._depth_map is None:
             return
         import numpy as np
@@ -4596,6 +4925,11 @@ class CollageDialog(QDialog):
     Das Ergebnis ersetzt das aktuelle Bild im Editor.
     """
     def __init__(self, parent):
+        """
+        Erstellt den Collage-Editor-Dialog.
+        Parameter:
+          parent – Eltern-Widget (ImageEditor-Hauptfenster)
+        """
         super().__init__(parent)
         self.setWindowTitle("🖼  Collage-Editor")
         self.setModal(True)
@@ -4613,6 +4947,7 @@ class CollageDialog(QDialog):
         self._build_ui()
 
     def _build_ui(self):
+        """Erstellt die Collage-UI: Raster-Auswahl oben, scrollbares Zell-Grid, Buttons unten."""
         main = QVBoxLayout(self)
         main.setSpacing(8)
 
@@ -4694,6 +5029,7 @@ class CollageDialog(QDialog):
         main.addLayout(btns)
 
     def _on_grid_change(self, text: str):
+        """Reagiert auf Änderung der Raster-Größe: leert alle Zellen und baut das Grid neu."""
         parts = text.split("×")
         self._grid_rows = int(parts[0])
         self._grid_cols = int(parts[1])
@@ -4705,6 +5041,7 @@ class CollageDialog(QDialog):
         self._update_btn()
 
     def _rebuild_grid(self):
+        """Baut das QGridLayout mit allen Zell-Widgets neu (Bild-Label + Filter-Dropdown)."""
         _COMBO_STYLE = """
             QComboBox { background:#252525; color:#ccc; border:1px solid #383838;
                         border-radius:3px; padding:2px 6px; font-size:10px; }
@@ -4754,6 +5091,7 @@ class CollageDialog(QDialog):
         self._scroll_area.setWidget(container)
 
     def _load_cell(self, row: int, col: int):
+        """Öffnet einen Dateidialog und lädt ein Bild in die angegebene Gitterzelle."""
         path, _ = QFileDialog.getOpenFileName(
             self, "Bild wählen", "",
             "Bilder (*.png *.jpg *.jpeg *.bmp *.webp *.gif);;Alle (*)")
@@ -4930,6 +5268,7 @@ class CollageDialog(QDialog):
         super().keyPressEvent(event)
 
     def _update_btn(self):
+        """Aktualisiert den Text und den aktivierten Zustand des 'Collage erstellen'-Buttons."""
         filled = len(self._cell_images)
         total  = self._grid_rows * self._grid_cols
         self.btn_create.setEnabled(filled > 0)
@@ -5018,22 +5357,27 @@ class ImageCanvas(QLabel):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
     def set_image(self, pix: QPixmap):
+        """Setzt ein neues Bild und setzt den Zoom auf 1:1 zurück."""
         self._pix_orig = pix
         self._zoom     = 1.0
         self._render()
 
     def update_image(self, pix: QPixmap):
+        """Aktualisiert das angezeigte Bild ohne den Zoom zurückzusetzen."""
         self._pix_orig = pix
         self._render()
 
     def set_zoom(self, z: float):
+        """Setzt den Zoom-Faktor (Bereich 0.05–20.0) und rendert neu."""
         self._zoom = max(0.05, min(z, 20.0))
         self._render()
 
     def get_zoom(self) -> float:
+        """Gibt den aktuellen Zoom-Faktor zurück."""
         return self._zoom
 
     def _render(self):
+        """Skaliert das Original-Pixmap mit dem aktuellen Zoom-Faktor und zeigt es an."""
         if not self._pix_orig:
             return
         w = int(self._pix_orig.width()  * self._zoom)
@@ -5081,9 +5425,11 @@ class ImageCanvas(QLabel):
         return self._overlay
 
     def _on_overlay_done(self):
+        """Räumt die Overlay-Referenz auf wenn ein Overlay sich schließt."""
         self._overlay = None
 
     def event(self, event):
+        """Verarbeitet Pinch-Gesten für Touch-Zoom; delegiert alle anderen Events an Qt."""
         if event.type() == event.Type.Gesture:
             pinch = event.gesture(Qt.GestureType.PinchGesture)
             if pinch:
@@ -5104,6 +5450,13 @@ class LabeledSlider(QWidget):
     value_changed = pyqtSignal(int)
 
     def __init__(self, label: str, mn: int, mx: int, default: int):
+        """
+        Erstellt einen Slider mit Beschriftung und Wertanzeige.
+        Parameter:
+          label   – Beschriftungstext links
+          mn, mx  – Wertebereich
+          default – Startwert
+        """
         super().__init__()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 2, 0, 2)
@@ -5128,9 +5481,12 @@ class LabeledSlider(QWidget):
         self.slider.valueChanged.connect(lambda v: (self.val_lbl.setText(str(v)), self.value_changed.emit(v)))
         layout.addWidget(self.slider)
 
-    def value(self): return self.slider.value()
+    def value(self):
+        """Gibt den aktuellen Slider-Wert zurück."""
+        return self.slider.value()
 
     def reset(self, val=100):
+        """Setzt den Slider auf val zurück ohne ein Signal auszulösen."""
         self.slider.blockSignals(True)
         self.slider.setValue(val)
         self.val_lbl.setText(str(val))
@@ -5167,6 +5523,10 @@ class ImageEditor(QMainWindow):
     ZOOM_STEP = 0.15   # Zoom-Schrittgröße pro Klick (15%)
 
     def __init__(self):
+        """
+        Initialisiert den ImageEditor: setzt alle Zustandsvariablen auf Default-Werte
+        und ruft alle _setup_*-Methoden auf um die UI vollständig aufzubauen.
+        """
         super().__init__()
         self.current_file       = None
         self.original_pil       = None   # Original der aktiven Ebene (für Slider-Reset)
@@ -5201,6 +5561,7 @@ class ImageEditor(QMainWindow):
 
     # ── Fenster ─────────────────────────────────
     def _setup_window(self):
+        """Setzt Fenstertitel, Größe, Mindestgröße und Anwendungsicon."""
         self.setWindowTitle("SBS Bildeditor v3")
         self.resize(1400, 900)
         self.setMinimumSize(900, 600)
@@ -5210,6 +5571,7 @@ class ImageEditor(QMainWindow):
 
     # ── Menüleiste ──────────────────────────────
     def _setup_menu(self):
+        """Erstellt die gesamte Menüleiste mit allen Menüs und Aktionen inkl. Shortcuts."""
         mb = self.menuBar()
         mb.setStyleSheet("background:#1a1a1a; color:#ddd; font-size:13px;")
 
@@ -5265,6 +5627,7 @@ class ImageEditor(QMainWindow):
 
     # ── Toolbar ─────────────────────────────────
     def _setup_toolbar(self):
+        """Erstellt die Toolbar mit häufig genutzten Aktionen (Öffnen, Speichern, Undo, Zoom, ...)."""
         tb = QToolBar(); tb.setMovable(False)
         tb.setStyleSheet("""
             QToolBar { background:#232323; border-bottom:1px solid #111; padding:3px 8px; spacing:3px; }
@@ -5326,6 +5689,7 @@ class ImageEditor(QMainWindow):
 
     # ── Canvas (Mitte) ───────────────────────────
     def _setup_central(self):
+        """Erstellt den zentralen ScrollArea-Container mit dem ImageCanvas."""
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(False)
         self.scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -5771,6 +6135,7 @@ class ImageEditor(QMainWindow):
 
     # ── Statusleiste ────────────────────────────
     def _setup_statusbar(self):
+        """Erstellt die Statusleiste am unteren Fensterrand mit einem Begrüßungstext."""
         self.status_bar = QStatusBar()
         self.status_bar.setStyleSheet(
             "background:#111; color:#666; font-size:11px; border-top:1px solid #2a2a2a;")
@@ -5872,18 +6237,21 @@ class ImageEditor(QMainWindow):
             QMessageBox.critical(self, "Fehler", str(e))
 
     def save_file(self):
+        """Speichert das Bild unter dem aktuellen Dateipfad (oder öffnet 'Speichern unter')."""
         if self.current_pil and self.current_file:
             self._save_to(self.current_file)
         else:
             self.save_file_as()
 
     def save_file_as(self):
+        """Öffnet einen Speicherdialog und speichert das Bild unter einem neuen Pfad."""
         if not self.current_pil: return
         path, _ = QFileDialog.getSaveFileName(self, "Speichern unter", "",
             "PNG (*.png);;JPEG (*.jpg);;BMP (*.bmp)")
         if path: self._save_to(path)
 
     def _save_to(self, path: str):
+        """Speichert das aktuelle Composite-Bild unter path (JPEG-Konvertierung bei .jpg)."""
         try:
             img = self.current_pil.copy()
             if path.lower().endswith((".jpg", ".jpeg")):
@@ -5927,6 +6295,7 @@ class ImageEditor(QMainWindow):
             self.history.pop(0)
 
     def undo(self):
+        """Stellt den letzten Undo-Snapshot wieder her (Ebenen-Zustand + Original-PIL)."""
         if not self.history:
             self.status_bar.showMessage("Nichts zum Rückgängigmachen.", 2000); return
         state = self.history.pop()
@@ -5957,6 +6326,7 @@ class ImageEditor(QMainWindow):
         self.status_bar.showMessage("🔄 Original wiederhergestellt", 2000)
 
     def _reset_sliders(self):
+        """Setzt alle Korrektur-Schieberegler auf den Standardwert 100 zurück."""
         for sl in [self.sl_brightness, self.sl_contrast,
                    self.sl_saturation, self.sl_sharpness]:
             sl.reset(100)
@@ -6154,12 +6524,21 @@ class ImageEditor(QMainWindow):
     #  TRANSFORMATIONEN
     # ══════════════════════════════════════════════
 
-    def rotate_cw(self):   self._transform(lambda i: i.rotate(-90, expand=True))
-    def rotate_ccw(self):  self._transform(lambda i: i.rotate( 90, expand=True))
-    def flip_horizontal(self): self._transform(lambda i: ImageOps.mirror(i))
-    def flip_vertical(self):   self._transform(lambda i: ImageOps.flip(i))
+    def rotate_cw(self):
+        """Dreht die aktive Ebene 90° im Uhrzeigersinn."""
+        self._transform(lambda i: i.rotate(-90, expand=True))
+    def rotate_ccw(self):
+        """Dreht die aktive Ebene 90° gegen den Uhrzeigersinn."""
+        self._transform(lambda i: i.rotate( 90, expand=True))
+    def flip_horizontal(self):
+        """Spiegelt die aktive Ebene horizontal."""
+        self._transform(lambda i: ImageOps.mirror(i))
+    def flip_vertical(self):
+        """Spiegelt die aktive Ebene vertikal."""
+        self._transform(lambda i: ImageOps.flip(i))
 
     def _transform(self, fn):
+        """Wendet eine Transformationsfunktion auf die aktive Ebene an (mit Undo-Schritt)."""
         if not self.layers: return
         layer = self.layers[self.active_layer_idx]
         if not layer.image: return
@@ -6197,9 +6576,11 @@ class ImageEditor(QMainWindow):
 
     # ── Farbfilter
     def apply_grayscale(self):
+        """Wandelt das Bild in Graustufen um."""
         self._filt(lambda i: ImageOps.grayscale(i).convert("RGBA"))
 
     def apply_sepia(self):
+        """Wendet einen Sepia-Vintage-Filter (rotbraune Tönung) an."""
         def sepia(img):
             g = ImageOps.grayscale(img)
             r = g.point(lambda x: min(255, int(x * 1.1)))
@@ -6246,10 +6627,12 @@ class ImageEditor(QMainWindow):
         self._filt(green)
 
     def apply_invert(self):
+        """Invertiert alle Farbkanäle (Negativ-Effekt)."""
         self._filt(lambda i: ImageOps.invert(i.convert("RGB")).convert("RGBA"))
 
     # ── Schärfe/Weiche
     def apply_sharpen(self):
+        """Schärft das Bild einmalig mit PIL SHARPEN-Filter."""
         self._filt(lambda i: i.filter(ImageFilter.SHARPEN))
 
     def apply_sharpen_strong(self):
@@ -6261,19 +6644,24 @@ class ImageEditor(QMainWindow):
         self._filt(sharpen3)
 
     def apply_blur(self):
+        """Weichzeichner mit Gauss-Radius 2 (leichter Unschärfe-Effekt)."""
         self._filt(lambda i: i.filter(ImageFilter.GaussianBlur(radius=2)))
 
     def apply_blur_strong(self):
+        """Starker Weichzeichner mit Gauss-Radius 6."""
         self._filt(lambda i: i.filter(ImageFilter.GaussianBlur(radius=6)))
 
     # ── Effekte
     def apply_emboss(self):
+        """Emboss (Relief)-Filter: erzeugt einen geprägten 3D-Effekt."""
         self._filt(lambda i: i.filter(ImageFilter.EMBOSS))
 
     def apply_edges(self):
+        """Kanten-Betonung: hebt Konturkanten stark hervor."""
         self._filt(lambda i: i.filter(ImageFilter.EDGE_ENHANCE_MORE))
 
     def apply_autocontrast(self):
+        """Auto-Kontrast: streckt das Histogramm auf den vollen 0–255 Bereich."""
         self._filt(lambda i: ImageOps.autocontrast(i.convert("RGB")))
 
     def apply_noise(self):
@@ -6838,17 +7226,21 @@ class ImageEditor(QMainWindow):
     # ══════════════════════════════════════════════
 
     def zoom_in(self):
+        """Vergrößert den Zoom um ZOOM_STEP (15%)."""
         self.canvas.set_zoom(self.canvas.get_zoom() + self.ZOOM_STEP)
         self._update_status()
 
     def zoom_out(self):
+        """Verkleinert den Zoom um ZOOM_STEP (15%)."""
         self.canvas.set_zoom(self.canvas.get_zoom() - self.ZOOM_STEP)
         self._update_status()
 
     def zoom_reset(self):
+        """Setzt Zoom auf 100% (1:1) zurück."""
         self.canvas.set_zoom(1.0); self._update_status()
 
     def zoom_fit(self):
+        """Passt den Zoom so an, dass das gesamte Bild in den Viewport passt."""
         if not self.canvas._pix_orig: return
         aw = self.scroll.viewport().width()  - 20
         ah = self.scroll.viewport().height() - 20
@@ -6858,6 +7250,7 @@ class ImageEditor(QMainWindow):
         self._update_status()
 
     def wheelEvent(self, event):
+        """Strg+Mausrad = Zoom rein/raus; ohne Strg = normales Scrollen."""
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             self.zoom_in() if event.angleDelta().y() > 0 else self.zoom_out()
             event.accept()
@@ -6865,6 +7258,7 @@ class ImageEditor(QMainWindow):
             super().wheelEvent(event)
 
     def event(self, event):
+        """Verarbeitet Pinch-Gesten (Touch-Zoom) auf dem Hauptfenster."""
         if event.type() == event.Type.Gesture:
             pinch = event.gesture(Qt.GestureType.PinchGesture)
             if pinch:
@@ -6889,16 +7283,19 @@ class ImageEditor(QMainWindow):
         self.ai_worker.start()
 
     def _on_ai_result(self, desc: str):
+        """Zeigt das KI-Analyseergebnis im Textfeld an und scrollt nach oben."""
         self.ai_text.setPlainText(f"🤖  KI-Beschreibung (Beta):\n\n{desc.strip()}")
         # Zum Anfang scrollen damit kein Text abgeschnitten wirkt
         self.ai_text.verticalScrollBar().setValue(0)
         self._reset_ai_btn()
 
     def _on_ai_error(self, err: str):
+        """Zeigt eine KI-Fehlermeldung im Textfeld an."""
         self.ai_text.setPlainText(f"⚠  Fehler:\n\n{err}")
         self._reset_ai_btn()
 
     def _reset_ai_btn(self):
+        """Stellt den KI-Analyse-Button nach Erfolg oder Fehler wieder auf seinen Standardzustand zurück."""
         self.btn_ai.setEnabled(True)
         self.btn_ai.setText("🤖  Analysieren  (Strg+A)")
 
@@ -7069,6 +7466,7 @@ class ImageEditor(QMainWindow):
     # ══════════════════════════════════════════════
 
     def _update_status(self):
+        """Aktualisiert die Statusleiste mit Dateiname, Bildgröße, Zoom und Undo-Anzahl."""
         if self.current_file and self.current_pil:
             pct  = int(self.canvas.get_zoom() * 100)
             name = self.current_file.split("/")[-1]
