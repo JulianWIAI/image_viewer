@@ -73,7 +73,7 @@
 ==============================================================
 """
 
-import sys, base64, json, urllib.request, io, math
+import sys, os, base64, json, urllib.request, io, math
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QLabel, QPushButton,
     QFileDialog, QScrollArea, QStatusBar, QSizePolicy, QToolBar,
@@ -5204,8 +5204,9 @@ class ImageEditor(QMainWindow):
         self.setWindowTitle("SBS Bildeditor v3")
         self.resize(1400, 900)
         self.setMinimumSize(900, 600)
-        self.setWindowIcon(QIcon("app_icon.png"))
-        QApplication.instance().setWindowIcon(QIcon("app_icon.png"))
+        _icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  "app_icon.png")
+        self.setWindowIcon(QIcon(_icon_path))
 
     # ── Menüleiste ──────────────────────────────
     def _setup_menu(self):
@@ -7084,7 +7085,21 @@ class ImageEditor(QMainWindow):
 # ══════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
+    # Windows: set AppUserModelID so the taskbar shows our icon instead of
+    # the generic Python interpreter icon.
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            "julia.image_viewer.app")
+    except Exception:
+        pass
+
     app = QApplication(sys.argv)
+
+    # Use an absolute path so the icon loads regardless of working directory.
+    _icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "app_icon.png")
+    app.setWindowIcon(QIcon(_icon_path))
     app.setStyle("Fusion")
 
     p = QPalette()
