@@ -1,6 +1,7 @@
 """
-main.py – Einstiegspunkt für den SBS Bildeditor v4.
-Startet die Qt-Anwendung und öffnet das Hauptfenster.
+main.py – Entry point for the SBS Image Editor v4.
+Initialises the Qt application, applies the dark colour scheme,
+and opens the main editor window.
 """
 import sys, os
 
@@ -11,7 +12,7 @@ from sbs.editor import ImageEditor
 
 
 def main():
-    # Windows: Taskleiste zeigt App-Icon statt Python-Icon
+    # Windows: show the application icon in the taskbar instead of the generic Python icon
     try:
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
@@ -21,13 +22,13 @@ def main():
 
     app = QApplication(sys.argv)
 
-    # App-Icon laden (absoluter Pfad, unabhängig vom Arbeitsverzeichnis)
+    # Load the app icon using an absolute path so it works regardless of the working directory
     _icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                              "app_icon.png")
+                              "assets", "app_icon.png")
     app.setWindowIcon(QIcon(_icon_path))
     app.setStyle("Fusion")
 
-    # Dunkles Farbschema (Fusion Dark)
+    # Dark colour scheme (Fusion Dark palette)
     p = QPalette()
     p.setColor(QPalette.ColorRole.Window,          QColor(38,  38,  38))
     p.setColor(QPalette.ColorRole.WindowText,      QColor(220, 220, 220))

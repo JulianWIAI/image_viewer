@@ -1,6 +1,6 @@
 """
 sbs/threed.py
-3D-Ansicht- und Tiefenkarten-Funktionalität für den SBS Bildeditor:
+3D-view and depth-map functionality for the SBS image editor:
   DepthWorker, NovelViewWorker, ThreeDViewerWidget, ThreeDModelDialog.
 """
 import math, os, io, base64, urllib.request
@@ -25,12 +25,19 @@ from .utils import pil_to_qpixmap
 
 class DepthWorker(QThread):
     """
-    Schätzt eine Tiefenkarte im Hintergrund-Thread.
+    Background thread for depth-map estimation from a single RGB image.
 
-    Probiert nacheinander:
-    1. transformers + Depth-Anything-V2-Small (~100 MB Download, beste Qualität)
-    2. torch + MiDaS_small (falls timm installiert)
-    3. Luminanz-basierte Approximation (immer verfügbar, niedrige Qualität)
+    Priority order
+    --------------
+    1. Depth-Anything-V2-Small (via transformers, ~100 MB download, best quality)
+    2. MiDaS_small (if torch + timm are available)
+    3. Luminance-based approximation (edge detection + smoothing, always available)
+
+    Signals
+    -------
+    depth_ready(np.ndarray) : Emitted with the estimated depth array (float32, 0–1).
+    progress(str)           : Status updates during loading / inference.
+    error(str)              : Emitted if estimation fails.
     """
     depth_ready = pyqtSignal(object)   # numpy.ndarray float32 0–1
     progress    = pyqtSignal(str)
@@ -38,17 +45,22 @@ class DepthWorker(QThread):
 
     def __init__(self, pil_image):
         """
-        Erstellt den DepthWorker.
-        Parameter:
-          pil_image – PIL-Bild, für das eine Tiefenkarte berechnet werden soll.
+        Initialise the DepthWorker.
+
+        Parameters
+        ----------
+        pil_image : PIL.Image
+            The image for which a depth map should be estimated.
         """
         super().__init__()
         self.pil_image = pil_image
 
     def run(self):
         """
-        Führt die Tiefenschätzung im Hintergrund aus.
-        Normalisiert das Ergebnis auf 0–1 und sendet es per depth_ready-Signal.
+        Execute depth estimation in the background thread.
+
+        Normalises the raw estimator output to the [0, 1] range and emits
+        the result via the ``depth_ready`` signal.
         """
         try:
             import numpy as np
@@ -59,7 +71,7 @@ class DepthWorker(QThread):
         except Exception as e:
             self.error.emit(str(e))
 
-    # Subprocess-Skript: läuft in sauberem Python ohne Qt-DLLs
+    # Subprocess script: runs in a clean Python process without Qt DLLs loaded.
     _DEPTH_SCRIPT = (
         "import sys, numpy as np\n"
         "from PIL import Image\n"
@@ -84,75 +96,94 @@ class DepthWorker(QThread):
 
     def _estimate(self):
         """
-        Versucht nacheinander Depth-Anything-V2 (Subprocess), dann Luminanz-Approximation.
-        Gibt ein numpy float32-Array mit rohen Tiefenwerten zurück.
+        Try depth estimators in priority order, returning a raw float32 array.
+
+        Attempts Depth-Anything-V2 first (via subprocess to avoid Qt DLL
+        conflicts), then falls back to a luminance-based approximation.
+
+        Returns
+        -------
+        np.ndarray
+            Raw depth values as float32.  Not yet normalised to [0, 1].
         """
         import sys, os, subprocess, tempfile
         import numpy as np
 
-        # ── Methode 1: Depth-Anything-V2 im Subprocess (kein Qt-DLL-Konflikt) ──
+        # ── Method 1: Depth-Anything-V2 in a subprocess (avoids Qt DLL conflicts) ──
         img_tmp = out_tmp = None
         try:
-            self.progress.emit("⏳  Lade Depth-Anything-V2 (Subprocess-Modus) …")
+            self.progress.emit("⏳  Loading Depth-Anything-V2 (subprocess mode) …")
             fd, img_tmp = tempfile.mkstemp(suffix=".png")
             os.close(fd)
             fd, out_tmp = tempfile.mkstemp(suffix=".npy")
             os.close(fd)
 
             self.pil_image.save(img_tmp)
-            self.progress.emit("🔍  Berechne KI-Tiefenkarte (Depth-Anything-V2) …")
+            self.progress.emit("🔍  Computing AI depth map (Depth-Anything-V2) …")
             res = subprocess.run(
                 [sys.executable, "-c", self._DEPTH_SCRIPT, img_tmp, out_tmp],
                 capture_output=True, text=True, timeout=300,
             )
             if res.returncode == 0:
                 depth = np.load(out_tmp)
-                self.progress.emit("✅  Depth-Anything-V2 fertig.")
+                self.progress.emit("✅  Depth-Anything-V2 done.")
                 return depth
-            self.progress.emit(f"⚠  Depth-Anything-V2 fehlgeschlagen: {res.stderr[-120:]}")
+            self.progress.emit(f"⚠  Depth-Anything-V2 failed: {res.stderr[-120:]}")
         except Exception as _e1:
-            self.progress.emit(f"⚠  Subprocess fehlgeschlagen: {_e1!s:.120}")
+            self.progress.emit(f"⚠  Subprocess failed: {_e1!s:.120}")
         finally:
             for p in (img_tmp, out_tmp):
                 if p:
                     try: os.unlink(p)
                     except OSError: pass
 
-        # ── Methode 2: Kanten-/Schärfe-Approximation (kein KI) ────────────────
-        self.progress.emit("⚠  Kein KI-Modell verfügbar — verwende Luminanz-Approximation …")
+        # ── Method 2: Edge / sharpness approximation (no AI model required) ──────
+        self.progress.emit("⚠  No AI model available — using luminance approximation …")
         from PIL import ImageFilter as _IF
         edges = np.array(
             self.pil_image.convert("L").filter(_IF.FIND_EDGES), dtype=np.float32
         )
         smooth_pil = PILImage.fromarray(edges.astype(np.uint8)).filter(_IF.GaussianBlur(8))
-        self.progress.emit("✅  Luminanz-Approximation fertig (geringe Qualität).")
+        self.progress.emit("✅  Luminance approximation done (low quality).")
         return np.array(smooth_pil, dtype=np.float32)
 
 
 class NovelViewWorker(QThread):
     """
-    Generiert KI-basierte Rückansicht via zero123plus-v1.1 (sudo-ai).
+    Background thread that synthesises an AI-generated back view via zero123plus-v1.1.
 
-    Benötigt:
-      pip install diffusers transformers accelerate
-      pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+    The back view is produced by averaging the two rear-facing tiles (azimuth
+    ≈ 150° and ≈ 210°) from the zero123plus 6-view grid, then resizing the result
+    to match the original image dimensions.
 
-    Gibt ein PIL-Image zurück (Rückseite ≈ azimuth 150°–210°, gemittelt).
+    Requirements
+    ------------
+    pip install diffusers transformers accelerate
+    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+
+    Signals
+    -------
+    views_ready(PIL.Image) : Emitted with the synthesised back-view image.
+    progress(str)          : Status updates during loading / inference.
+    error(str)             : Emitted if synthesis fails.
     """
-    views_ready = pyqtSignal(object)   # PIL Image — generierte Rückseite
+    views_ready = pyqtSignal(object)   # PIL Image — generated back view
     progress    = pyqtSignal(str)
     error       = pyqtSignal(str)
 
     def __init__(self, pil_image):
         """
-        Erstellt den NovelViewWorker.
-        Parameter:
-          pil_image – PIL-Bild, für das eine KI-Rückseite generiert werden soll.
+        Initialise the NovelViewWorker.
+
+        Parameters
+        ----------
+        pil_image : PIL.Image
+            The image for which an AI back view should be generated.
         """
         super().__init__()
         self.pil_image = pil_image
 
-    # Subprocess-Skript: läuft in sauberem Python ohne Qt-DLLs
+    # Subprocess script: runs in a clean Python process without Qt DLLs loaded.
     _Z123_SCRIPT = (
         "import sys, os, functools, numpy as np\n"
         "from PIL import Image\n"
@@ -189,41 +220,48 @@ class NovelViewWorker(QThread):
     )
 
     def run(self):
-        """Startet die KI-Rückseitengenerierung und sendet das Ergebnis-Bild per views_ready-Signal."""
+        """Start AI back-view generation and emit the result via the ``views_ready`` signal."""
         try:
             back = self._zero123plus()
             self.views_ready.emit(back)
         except Exception as e:
             self.error.emit(str(e))
 
-    # ── zero123plus-v1.1 im Subprocess ───────────────────────
+    # ── zero123plus-v1.1 via subprocess ───────────────────────
     def _zero123plus(self):
         """
-        Führt zero123plus-v1.1 in einem separaten Python-Prozess aus.
-        Speichert Eingabe- und Ausgabebild als temporäre Dateien und
-        gibt das resultierende Rückseitenbild als PIL-Image zurück.
+        Run zero123plus-v1.1 in a separate Python process.
+
+        Input and output images are exchanged via temporary files on disk to
+        avoid Qt DLL conflicts that occur when heavy ML libraries are loaded
+        inside a Qt-owned thread.
+
+        Returns
+        -------
+        PIL.Image
+            The synthesised back-view image, converted to RGB.
         """
         import sys, os, subprocess, tempfile
 
         img_tmp = out_tmp = None
         try:
-            self.progress.emit("⏳  Lade zero123plus-v1.1 (Subprocess-Modus) …")
+            self.progress.emit("⏳  Loading zero123plus-v1.1 (subprocess mode) …")
             fd, img_tmp = tempfile.mkstemp(suffix=".png")
             os.close(fd)
             fd, out_tmp = tempfile.mkstemp(suffix=".png")
             os.close(fd)
 
             self.pil_image.save(img_tmp)
-            self.progress.emit("🔄  Generiere 6 Ansichten (zero123plus) — bitte warten …")
+            self.progress.emit("🔄  Generating 6 views (zero123plus) — please wait …")
             res = subprocess.run(
                 [sys.executable, "-c", self._Z123_SCRIPT, img_tmp, out_tmp],
                 capture_output=True, text=True, timeout=1800,
             )
             if res.returncode != 0:
-                raise RuntimeError(res.stderr[-500:] or "Subprocess fehlgeschlagen (kein stderr)")
+                raise RuntimeError(res.stderr[-500:] or "Subprocess failed (no stderr output)")
 
             back_pil = PILImage.open(out_tmp).convert("RGB")
-            self.progress.emit("✅  KI-Rückseite (zero123plus) fertig.")
+            self.progress.emit("✅  AI back view (zero123plus) done.")
             return back_pil
         finally:
             for p in (img_tmp, out_tmp):
@@ -231,16 +269,18 @@ class NovelViewWorker(QThread):
                     try: os.unlink(p)
                     except OSError: pass
 
-    # ── (veraltet — Zero-1-to-3 XL entfernt aus diffusers 0.28+) ─
+    # ── (deprecated — Zero-1-to-3 XL was removed from diffusers 0.28+) ─────
     def _zero1to3(self):
         """
-        Veraltete Methode: nutzt Zero-1-to-3 XL (nicht mehr in diffusers 0.28+).
-        Generiert Rückseite bei azimuth=180° und skaliert auf Originalgröße.
+        Deprecated: uses Zero-1-to-3 XL, which is no longer available in diffusers 0.28+.
+
+        Generates a back view at azimuth=180° and upscales to the original image size.
+        Kept for reference only; use ``_zero123plus`` instead.
         """
         import torch
         from diffusers import Zero1to3StableDiffusionPipeline
 
-        self.progress.emit("⏳  Lade Zero-1-to-3 XL (~5 GB) …")
+        self.progress.emit("⏳  Loading Zero-1-to-3 XL (~5 GB) …")
         dtype = torch.float16 if torch.cuda.is_available() else torch.float32
         pipe = Zero1to3StableDiffusionPipeline.from_pretrained(
             "cvlab-columbia/zero123-xl",
@@ -253,11 +293,11 @@ class NovelViewWorker(QThread):
         else:
             pipe = pipe.to("cpu")
 
-        # Zero-1-to-3 erwartet 256×256
+        # Zero-1-to-3 expects a 256×256 input image
         img256 = self.pil_image.convert("RGB").resize((256, 256),
                                                        PILImage.Resampling.LANCZOS)
 
-        self.progress.emit("🔄  Generiere Rückseite azimuth=180° (Zero-1-to-3 XL) …")
+        self.progress.emit("🔄  Generating back view at azimuth=180° (Zero-1-to-3 XL) …")
         device = "cuda" if torch.cuda.is_available() else "cpu"
         result = pipe(
             img256,
@@ -268,35 +308,50 @@ class NovelViewWorker(QThread):
             distance_cond=torch.Tensor([1.0]).to(device),
         ).images[0]
 
-        # Auf Originalgröße hochskalieren
+        # Upscale to original image dimensions
         result = result.resize(self.pil_image.size, PILImage.Resampling.LANCZOS)
-        self.progress.emit("✅  KI-Rückseite (Zero-1-to-3 XL) fertig.")
+        self.progress.emit("✅  AI back view (Zero-1-to-3 XL) done.")
         return result
 
 
 class ThreeDViewerWidget(QWidget):
     """
-    3D-Viewer auf Basis von Matplotlib (kein PyOpenGL / QOpenGLWidget nötig).
+    Interactive 3D mesh viewer built on Matplotlib (no PyOpenGL or QOpenGLWidget needed).
 
-    Matplotlib rendert das Tiefenkarten-Mesh als texturierten 3D-Plot.
-    Steuerung direkt durch Matplotlib:
-    • Linke Maustaste ziehen  → Rotation
-    • Rechte Maustaste ziehen → Zoom
-    Tiefenskala nachträglich änderbar via update_depth_scale().
+    Matplotlib renders the depth-map mesh as a textured 3D plot embedded in a
+    Qt widget.  The mesh covers both front and back surfaces, connected by seam
+    triangles along the silhouette edge, forming a closed watertight model.
+
+    Navigation (handled entirely by Matplotlib)
+    --------------------------------------------
+    Left-mouse drag  : Rotate the model.
+    Right-mouse drag : Zoom in/out.
+
+    The depth scale and invert flag can be updated live via ``update_depth_scale()``,
+    which re-renders the mesh without reconstructing the entire widget.
     """
 
     def __init__(self, pil_image, depth_map, depth_scale=0.3, invert=False,
                  show_back=True, parent=None):
         """
-        Erstellt den 3D-Viewer.
+        Initialise the 3D viewer widget.
 
-        Parameter:
-          pil_image   – Originalbild für die Textur
-          depth_map   – Tiefenkarte als numpy float32 Array (0–1, normalisiert)
-          depth_scale – Stärke der Z-Auslenkung im Mesh
-          invert      – Tiefenkarte invertieren (nah/fern tauschen)
-          show_back   – Rückseite des Meshs anzeigen
-          parent      – optionales Eltern-Widget
+        Parameters
+        ----------
+        pil_image : PIL.Image
+            Source image used as the mesh texture.
+        depth_map : np.ndarray
+            Depth map as a float32 array normalised to [0, 1].
+        depth_scale : float
+            Strength of Z displacement in the mesh.  Higher values produce a
+            more pronounced 3D effect.
+        invert : bool
+            Invert the depth map (swap near/far).  Useful when the estimator
+            treats light areas as close rather than distant.
+        show_back : bool
+            Whether to render the generated back surface of the mesh.
+        parent : QWidget, optional
+            Parent widget.
         """
         super().__init__(parent)
         self.pil_image   = pil_image
@@ -312,13 +367,15 @@ class ThreeDViewerWidget(QWidget):
 
     def _init_plot(self):
         """
-        Initialisiert das Matplotlib-3D-Plot-Widget.
-        Skaliert Bild und Tiefenkarte auf max. 150×150 Gitterpunkte,
-        erstellt das XY-Meshgrid und ruft _draw() auf.
+        Initialise the Matplotlib 3D plot widget.
+
+        Scales both the image and depth map down to at most 150×150 grid points
+        (to keep rendering fast), builds the XY meshgrid, detects the background
+        mask, generates the back texture, and triggers the first ``_draw()`` call.
         """
         import numpy as np
 
-        # matplotlib-Canvas einbinden (backend_qtagg seit matplotlib 3.6)
+        # Embed the Matplotlib canvas (backend_qtagg available since matplotlib 3.6)
         FigureCanvasQTAgg = None
         for _backend in ("matplotlib.backends.backend_qtagg",
                          "matplotlib.backends.backend_qt5agg"):
@@ -330,7 +387,7 @@ class ThreeDViewerWidget(QWidget):
             except Exception:
                 pass
         if FigureCanvasQTAgg is None:
-            lbl = QLabel("matplotlib fehlt.\n  pip install matplotlib")
+            lbl = QLabel("matplotlib not found.\n  pip install matplotlib")
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lay = QVBoxLayout(self); lay.addWidget(lbl)
             return
@@ -342,7 +399,7 @@ class ThreeDViewerWidget(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(self._canvas)
 
-        # Daten vorbereiten
+        # Prepare grid data
         iw, ih = self.pil_image.size
         gw = min(150, iw)
         gh = min(150, ih)
@@ -357,11 +414,11 @@ class ThreeDViewerWidget(QWidget):
             np.linspace(0.5, -0.5, gh),   # Phase 1: Y top→bottom in image = +Y→−Y in 3D
         )
 
-        # ── Hintergrund-Maske (True = Hintergrundpixel → transparent) ──
+        # ── Background mask (True = background pixel → transparent) ──────────
         # Computed first so _make_back_texture can use char_mask.
         self._bg_mask = ThreeDViewerWidget._detect_bg(self._img_np)
 
-        # ── Generierte Rückseite — silhouette-ring inpainting ─────────
+        # ── Generated back texture — silhouette-ring inpainting ──────────────
         # Instead of a simple flip (which bleeds belly/light colors onto
         # the back), we propagate the colors from the inner silhouette
         # ring outward.  Each back pixel inherits the nearest edge color
@@ -375,13 +432,24 @@ class ThreeDViewerWidget(QWidget):
     @staticmethod
     def _detect_bg(img_np, threshold=0.13):
         """
-        Erkennt Hintergrundpixel: Flood-Fill-Approximation über Eck-Farbe
-        + direkte Erkennung nahezu-weißer Pixel.
+        Detect background pixels using corner-colour flood-fill and a near-white test.
 
-        After the raw threshold pass a morphological 'fill-holes' step
-        removes interior false-positives (slight transparency / JPEG
-        artefacts inside the character body) that would otherwise punch
-        NaN holes through the mesh.
+        A raw colour-threshold pass is followed by a morphological fill-holes step
+        that removes interior false positives (slight transparency or JPEG artefacts
+        inside the subject) which would otherwise punch NaN holes through the mesh.
+
+        Parameters
+        ----------
+        img_np : np.ndarray
+            Float32 RGB image array, values in [0, 1], shape (H, W, 3).
+        threshold : float
+            Maximum mean channel difference from the corner background colour
+            for a pixel to be classified as background.
+
+        Returns
+        -------
+        np.ndarray
+            Boolean mask of shape (H, W).  True = background pixel.
         """
         import numpy as np
         # ── Raw threshold pass ────────────────────────────────
@@ -591,17 +659,17 @@ class ThreeDViewerWidget(QWidget):
 
     def _draw(self):
         """
-        Zeichnet das vollständige 3D-Mesh in der Matplotlib-Figure.
-        Baut Front- und Rückseiten-Dreiecke, Seam-Dreiecke am Silhouettenrand
-        und rendert alle als Poly3DCollection mit eingebetteten Farben.
+        Render the complete 3D mesh into the Matplotlib figure.
+        Builds front- and back-face triangles, seam triangles along the silhouette
+        edge, and renders them all as a Poly3DCollection with embedded vertex colours.
         """
         if self._fig is None or self._canvas is None:
             return
         import numpy as np
         from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
-        # ── Kantenglättungs-Radius (Pixel) ────────────────────
-        # Erhöhen für weichere/rundere Kanten, 0 zum Deaktivieren.
+        # ── Edge-feathering radius (pixels) ───────────────────
+        # Increase for softer/rounder edges; set to 0 to disable.
         _EDGE_FEATHER_PX = 3
 
         # Alten Rotations-Handler trennen (beide Event-IDs)
@@ -621,7 +689,7 @@ class ThreeDViewerWidget(QWidget):
         depth_raw = (1.0 - self._depth_np) if self.invert else self._depth_np
         mask      = getattr(self, '_bg_mask', None)
 
-        # Tiefenkarte weichzeichnen → glatteres Mesh
+        # Blur the depth map → smoother mesh surface
         try:
             from PIL import ImageFilter as _IFD
             _dp = PILImage.fromarray((depth_raw * 255).astype(np.uint8))
@@ -636,7 +704,7 @@ class ThreeDViewerWidget(QWidget):
         if _d_max - _d_min > 1e-6:
             depth = (depth - _d_min) / (_d_max - _d_min)
 
-        # sqrt-Kompression × 0.5 → Vorder-/Rückfläche näher beieinander
+        # sqrt compression × 0.5 → front and back faces are closer together
         ZZ = np.sqrt(depth) * self.depth_scale * 0.5
 
         # ── Fix 1: Silhouetten-Kantenramp ─────────────────────
@@ -660,7 +728,7 @@ class ThreeDViewerWidget(QWidget):
             feather = np.clip(dist / _EDGE_FEATHER_PX, 0.0, 1.0)
             ZZ = ZZ * feather
 
-        # ── Fix 2: NaN für Hintergrund → keine Wasserfall-Faces ─
+        # ── Fix 2: NaN for background → no waterfall faces ──────
         # np.nan causes plot_surface to skip any quad touching that vertex.
         # Previously Z=0 created a visible slanted face at the silhouette.
         if mask is not None:
@@ -1229,7 +1297,7 @@ class ThreeDViewerWidget(QWidget):
 
     def update_depth_scale(self, scale: float, invert: bool = False,
                            show_back: bool = True):
-        """Aktualisiert Tiefenskala, Invertierung und Rückseiteneinstellung und rendert neu."""
+        """Update the depth scale, inversion flag, and back-face setting, then re-render."""
         self.depth_scale = scale
         self.invert      = invert
         self.show_back   = show_back
@@ -1271,18 +1339,22 @@ class ThreeDViewerWidget(QWidget):
 
 class ThreeDModelDialog(QDialog):
     """
-    2D → 3D Modell-Viewer (Beta)
+    2D → 3D model viewer (Beta).
 
-    Öffnet das aktuelle Bild, schätzt eine Tiefenkarte mit KI (Depth-Anything-V2
-    oder MiDaS) und zeigt das Ergebnis als interaktives 3D-Mesh.
+    Opens the current image, estimates a depth map using AI (Depth-Anything-V2
+    or MiDaS), and displays the result as an interactive 3D mesh.
     """
 
     def __init__(self, parent, editor):
         """
-        Erstellt den 3D-Modell-Dialog.
-        Parameter:
-          parent – Eltern-Widget (ImageEditor-Hauptfenster)
-          editor – Referenz auf den ImageEditor (für Ebenen-Zugriff)
+        Create the 3D model dialog.
+
+        Parameters
+        ----------
+        parent : QWidget
+            Parent widget (ImageEditor main window).
+        editor : ImageEditor
+            Reference to the ImageEditor, used to access the layer stack.
         """
         super().__init__(parent)
         self.editor   = editor
@@ -1299,7 +1371,7 @@ class ThreeDModelDialog(QDialog):
         self._build_ui()
 
     def _build_ui(self):
-        """Erstellt die vollständige UI des 3D-Dialogs (Steuerseite + 3D-Viewer-Container)."""
+        """Build the full UI of the 3D dialog (control panel + 3D viewer container)."""
         root = QHBoxLayout(self)
         root.setSpacing(10)
 
@@ -1334,7 +1406,7 @@ class ThreeDModelDialog(QDialog):
         )
         ctrl.addWidget(info)
 
-        # Tiefen-Effekt Stärke
+        # Depth effect strength slider
         sp_s = "background:#2d2d2d; color:#ddd; border:1px solid #333; padding:2px;"
         ctrl.addWidget(QLabel("Tiefen-Effekt Stärke:"))
         self._depth_slider = QSlider(Qt.Orientation.Horizontal)
@@ -1348,7 +1420,7 @@ class ThreeDModelDialog(QDialog):
         self._depth_slider.valueChanged.connect(self._on_depth_slider)
         ctrl.addWidget(self._depth_slider)
 
-        # Tiefe invertieren (für helle Hintergründe / Produktfotos)
+        # Invert depth (useful for bright/white backgrounds such as product photos)
         from PyQt6.QtWidgets import QCheckBox
         self._chk_invert = QCheckBox("🔄  Tiefe invertieren")
         self._chk_invert.setStyleSheet("color:#ddd; font-size:11px;")
@@ -1371,7 +1443,7 @@ class ThreeDModelDialog(QDialog):
         self._chk_back.stateChanged.connect(self._on_invert_changed)
         ctrl.addWidget(self._chk_back)
 
-        # Mesh-Auflösung
+        # Mesh resolution (grid size)
         ctrl.addWidget(QLabel("Mesh-Auflösung (Grid-Größe):"))
         self._sp_resolution = QSpinBox()
         self._sp_resolution.setRange(50, 300)
@@ -1403,7 +1475,7 @@ class ThreeDModelDialog(QDialog):
         self._btn_show_depth.setEnabled(False)
         ctrl.addWidget(self._btn_show_depth)
 
-        # KI-Rückseite generieren
+        # AI back-face generation button
         self._btn_ai_back = QPushButton("🤖  KI-Rückseite generieren")
         self._btn_ai_back.setStyleSheet(
             "QPushButton { background:#1a2a3a; color:#7ec8e3; border:1px solid #2a4a5a; "
@@ -1426,7 +1498,7 @@ class ThreeDModelDialog(QDialog):
         self._btn_ai_back.setEnabled(False)
         ctrl.addWidget(self._btn_ai_back)
 
-        # Als 3D exportieren
+        # Export as 3D file
         self._btn_export = QPushButton("💾  Als 3D exportieren …")
         self._btn_export.setStyleSheet(
             "QPushButton { background:#2a1a3a; color:#c39bd3; border:1px solid #4a2a5a; "
@@ -1444,7 +1516,7 @@ class ThreeDModelDialog(QDialog):
         self._btn_export.setEnabled(False)
         ctrl.addWidget(self._btn_export)
 
-        # 3D-Druck STL-Export
+        # 3D-print STL export button
         self._btn_stl = QPushButton("🖨  Export for 3D Printing (.stl)")
         self._btn_stl.setStyleSheet(
             "QPushButton { background:#2a1a0a; color:#f0a830; border:1px solid #5a3a0a; "
@@ -1470,9 +1542,9 @@ class ThreeDModelDialog(QDialog):
         ctrl.addStretch()
         root.addWidget(ctrl_w)
 
-        # ── Rechte Seite: persistenter Container ─────────────
-        # Der Container bleibt immer im root-Layout.
-        # Nur sein Inhalt (Placeholder ↔ Viewer) wird getauscht.
+        # ── Right side: persistent container ─────────────────
+        # The container stays in the root layout permanently.
+        # Only its content (placeholder ↔ viewer) is swapped.
         self._right_panel = QWidget()
         self._right_panel.setMinimumSize(640, 480)
         self._right_lay = QVBoxLayout(self._right_panel)
@@ -1489,16 +1561,16 @@ class ThreeDModelDialog(QDialog):
         self._right_lay.addWidget(self._placeholder)
         root.addWidget(self._right_panel, 1)
 
-    # ── Tiefenschätzung starten ──────────────────────────────
+    # ── Depth estimation ─────────────────────────────────────
 
     @staticmethod
     def _preload_torch():
         """
-        Lädt torch im Haupt-Thread vor, bevor ein QThread startet.
-        Auf Windows schlägt die DLL-Initialisierung fehl, wenn torch
-        erstmals in einem Qt-C++-Thread (nicht im Python-Haupt-Thread)
-        importiert wird.  Durch den Vorab-Import ist c10.dll danach
-        bereits im Prozess und der Thread-Import funktioniert.
+        Pre-load torch on the main thread before a QThread starts.
+        On Windows, DLL initialisation fails when torch is first imported
+        inside a Qt C++ thread (i.e. not the Python main thread).
+        By importing it here first, c10.dll is already in the process
+        and the thread import succeeds.
         """
         try:
             import torch          # noqa: F401
@@ -1507,13 +1579,13 @@ class ThreeDModelDialog(QDialog):
             pass
 
     def _start(self):
-        """Startet die Tiefenschätzung für das aktuelle Compositebild im Hintergrund-Thread."""
+        """Start depth estimation for the current composite image in a background thread."""
         if not self.editor.layers:
             return
 
         self._preload_torch()
         img = self.editor._composite_layers().convert("RGB")
-        # Auf max 768px begrenzen für Performance
+        # Cap at 768 px on the longest side for performance
         if max(img.size) > 768:
             img = img.copy()
             img.thumbnail((768, 768), PILImage.Resampling.LANCZOS)
@@ -1534,7 +1606,7 @@ class ThreeDModelDialog(QDialog):
         self._worker.start()
 
     def _on_depth_ready(self, depth_map):
-        """Empfängt die fertige Tiefenkarte vom Worker und initialisiert den 3D-Viewer."""
+        """Receive the completed depth map from the worker and initialise the 3D viewer."""
         self._depth_map = depth_map
         self._btn_show_depth.setEnabled(True)
         self._btn_ai_back.setEnabled(True)
@@ -1542,21 +1614,21 @@ class ThreeDModelDialog(QDialog):
         self._show_viewer()
 
     def _show_viewer(self):
-        """Erstellt einen neuen ThreeDViewerWidget und ersetzt den Platzhalter im Container."""
+        """Create a new ThreeDViewerWidget and replace the placeholder in the container."""
         scale = self._depth_slider.value() / 100.0
 
-        # Alten Viewer aus Container entfernen
+        # Remove the old viewer from the container
         if self._viewer:
             self._right_lay.removeWidget(self._viewer)
             self._viewer.hide()
             self._viewer.deleteLater()
             self._viewer = None
 
-        # Platzhalter verstecken
+        # Hide the placeholder label
         self._placeholder.hide()
         self._right_lay.removeWidget(self._placeholder)
 
-        # Neuen Viewer in Container einsetzen — parent=_right_panel hält ihn am Leben
+        # Insert the new viewer into the container (parent=_right_panel keeps it alive)
         self._viewer = ThreeDViewerWidget(
             self._img, self._depth_map,
             depth_scale=scale,
@@ -1573,21 +1645,21 @@ class ThreeDModelDialog(QDialog):
         )
 
     def _on_depth_slider(self, val: int):
-        """Aktualisiert die Tiefen-Skalierung im Viewer wenn der Slider bewegt wird."""
+        """Update the depth scale in the viewer when the slider is moved."""
         if self._viewer:
             self._viewer.update_depth_scale(val / 100.0,
                                             self._chk_invert.isChecked(),
                                             self._chk_back.isChecked())
 
     def _on_invert_changed(self):
-        """Aktualisiert den 3D-Viewer wenn 'Tiefe invertieren' oder 'Rückseite' geändert wird."""
+        """Update the 3D viewer when the invert-depth or show-back checkbox changes."""
         if self._viewer:
             self._viewer.update_depth_scale(self._depth_slider.value() / 100.0,
                                             self._chk_invert.isChecked(),
                                             self._chk_back.isChecked())
 
     def _start_novel_view(self):
-        """Startet den NovelViewWorker für KI-generierte Rückseite."""
+        """Launch the NovelViewWorker to generate an AI back face."""
         if self._img is None:
             return
 
@@ -1606,7 +1678,7 @@ class ThreeDModelDialog(QDialog):
         self._novel_worker.start()
 
     def _on_novel_view_ready(self, back_pil):
-        """Wendet die KI-generierte Rückseite auf den Viewer an."""
+        """Apply the AI-generated back face to the 3D viewer."""
         self._btn_ai_back.setEnabled(True)
         if self._viewer:
             self._viewer.set_ai_back(back_pil)
@@ -1618,7 +1690,7 @@ class ThreeDModelDialog(QDialog):
             self._lbl_status.setText("✅ KI-Rückseite bereit (3D-Modell noch nicht erstellt).")
 
     def _on_novel_view_error(self, msg: str):
-        """Zeigt eine Fehlermeldung wenn die KI-Rückseitengenerierung fehlschlägt."""
+        """Show an error dialog when AI back-face generation fails."""
         self._btn_ai_back.setEnabled(True)
         self._lbl_status.setText(f"❌ KI-Rückseite fehlgeschlagen.")
         QMessageBox.critical(
@@ -1631,7 +1703,7 @@ class ThreeDModelDialog(QDialog):
         )
 
     def _export_3d(self):
-        """Exportiert das aktuelle 3D-Mesh als GLB oder OBJ-Datei."""
+        """Export the current 3D mesh as a GLB or OBJ file."""
         if self._viewer is None:
             return
         try:
@@ -1661,7 +1733,7 @@ class ThreeDModelDialog(QDialog):
             QMessageBox.critical(self, "Export-Fehler", str(e))
 
     def _export_stl(self):
-        """Exportiert das Mesh als druckfertiges binäres STL (100 mm längste Seite)."""
+        """Export the mesh as a print-ready binary STL scaled to 100 mm on the longest side."""
         if self._viewer is None:
             return
         path, _ = QFileDialog.getSaveFileName(
@@ -1681,7 +1753,7 @@ class ThreeDModelDialog(QDialog):
             QMessageBox.critical(self, "STL-Export-Fehler", str(e))
 
     def _show_depth_map(self):
-        """Zeigt die berechnete Tiefenkarte in einem separaten Dialog (hell = nah, dunkel = fern)."""
+        """Show the estimated depth map in a separate dialog (bright = near, dark = far)."""
         if self._depth_map is None:
             return
         import numpy as np

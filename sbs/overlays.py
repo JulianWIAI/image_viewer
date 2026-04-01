@@ -1,6 +1,6 @@
 """
 sbs/overlays.py
-Alle Overlay-Widgets für den SBS Bildeditor:
+All overlay widgets for the SBS image editor:
   CropOverlay, ShapePlacerOverlay, DrawOverlay,
   TransformOverlay, MovableRectOverlay, MovableLassoOverlay, MagicWandOverlay.
 """
@@ -23,42 +23,43 @@ from .utils import SHAPE_LIBRARY, draw_shape_on_pil, _scale_pts, pil_to_qpixmap
 
 class CropOverlay(QWidget):
     """
-    Transparentes Overlay-Widget für den Zuschnitt-Modus.
+    Transparent overlay widget for crop mode.
 
-    KONZEPT 'Overlay':
-    Statt das Bild direkt zu verändern, wird ein unsichtbares Widget
-    über den Canvas gelegt. Dieses Widget fängt alle Mausereignisse ab.
-    Erst beim Loslassen der Maus wird das echte PIL-Bild zugeschnitten.
-    → Nicht-destruktiv: Der Nutzer sieht eine Vorschau bevor etwas passiert.
+    OVERLAY CONCEPT:
+    Instead of modifying the image directly, an invisible widget is placed
+    over the canvas. This widget intercepts all mouse events.
+    The actual PIL image is only cropped after the mouse button is released.
+    Non-destructive: the user sees a preview before anything is committed.
 
-    Modus 'rect':  Klicken + Ziehen → Rechteck
-    Modus 'lasso': Freihand zeichnen → Polygon-Maske
+    Mode 'rect':  click and drag → rectangle selection
+    Mode 'lasso': freehand draw → polygon mask
 
-    Signale (Signal/Slot-Prinzip):
+    Signals (Signal/Slot pattern):
       rect_selected  → ImageEditor._do_rect_crop()
       lasso_selected → ImageEditor._do_lasso_crop()
-      cancelled      → Statusleiste "Abgebrochen"
+      cancelled      → status bar "Cancelled"
     """
-    rect_selected  = pyqtSignal(QRect)   # Rechteck-Koordinaten fertig
-    lasso_selected = pyqtSignal(list)    # Lasso-Punkte fertig
-    cancelled      = pyqtSignal()        # ESC gedrückt
+    rect_selected  = pyqtSignal(QRect)   # rectangle coordinates ready
+    lasso_selected = pyqtSignal(list)    # lasso points ready
+    cancelled      = pyqtSignal()        # ESC pressed
 
     def __init__(self, parent, mode: str = "rect"):
         """
-        Erstellt das Crop-Overlay über dem angegebenen Eltern-Widget.
+        Create the crop overlay covering the given parent widget.
 
-        Parameter:
-          parent – Eltern-Widget (ImageCanvas); das Overlay bedeckt es vollständig
-          mode   – 'rect' für Rechteck-Auswahl, 'lasso' für Freihand-Polygon
+        Parameters
+        ----------
+        parent : Parent widget (ImageCanvas); the overlay covers it completely.
+        mode   : 'rect' for rectangle selection, 'lasso' for freehand polygon.
         """
         super().__init__(parent)
-        self.mode      = mode          # "rect" oder "lasso"
-        self.start_pt  = None          # Startpunkt (Rechteck)
-        self.end_pt    = None          # Endpunkt (Rechteck)
-        self.lasso_pts = []            # Lasso-Punkte
+        self.mode      = mode          # "rect" or "lasso"
+        self.start_pt  = None          # start point (rectangle)
+        self.end_pt    = None          # end point (rectangle)
+        self.lasso_pts = []            # lasso points
         self.drawing   = False
 
-        # Vollflächig, transparent, immer oben
+        # Full-size, transparent, always on top
         self.setGeometry(parent.rect())
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self.setStyleSheet("background: transparent;")
@@ -67,14 +68,14 @@ class CropOverlay(QWidget):
         self.setFocus()
 
     def keyPressEvent(self, event):
-        """Escape → Abbruch; sendet cancelled-Signal und schließt das Overlay."""
+        """Escape → cancel; emits the cancelled signal and closes the overlay."""
         if event.key() == Qt.Key.Key_Escape:
             self.cancelled.emit()
             self.close()
 
-    # ── Rechteck-Modus ──────────────────────────
+    # ── Rectangle mode ──────────────────────────
     def mousePressEvent(self, event):
-        """Linker Mausklick: Zeichnen beginnen, Start- und Endpunkt setzen."""
+        """Left mouse button: begin drawing, set start and end point."""
         if event.button() == Qt.MouseButton.LeftButton:
             self.drawing  = True
             self.start_pt = event.pos()
@@ -83,7 +84,7 @@ class CropOverlay(QWidget):
             self.update()
 
     def mouseMoveEvent(self, event):
-        """Mausbewegung: Endpunkt aktualisieren; im Lasso-Modus Punkt zur Liste hinzufügen."""
+        """Mouse moved: update end point; in lasso mode also append point to the list."""
         if self.drawing:
             self.end_pt = event.pos()
             if self.mode == "lasso":
@@ -92,15 +93,15 @@ class CropOverlay(QWidget):
 
     def mouseReleaseEvent(self, event):
         """
-        Maustaste losgelassen: Auswahl abschließen.
-        Ist die Auswahl groß genug, wird das entsprechende Signal gesendet.
-        Zu kleine Auswahl → cancelled-Signal.
+        Mouse button released: finalise the selection.
+        If the selection is large enough, the appropriate signal is emitted.
+        Selections that are too small emit the cancelled signal instead.
         """
         if event.button() == Qt.MouseButton.LeftButton and self.drawing:
             self.drawing = False
             if self.mode == "rect" and self.start_pt and self.end_pt:
                 rect = QRect(self.start_pt, self.end_pt).normalized()
-                # Mindestgröße 10×10 px damit keine versehentliche Auswahl entsteht
+                # Minimum size 10×10 px to prevent accidental selections
                 if rect.width() > 10 and rect.height() > 10:
                     self.rect_selected.emit(rect)
                 else:
@@ -112,11 +113,11 @@ class CropOverlay(QWidget):
             self.close()
 
     def paintEvent(self, event):
-        """Zeichnet die Auswahlmarkierung auf das transparente Overlay."""
+        """Draw the selection marker on the transparent overlay."""
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # Dunkle Überlagerung
+        # Dark dimming overlay
         painter.fillRect(self.rect(), QColor(0, 0, 0, 80))
 
         pen = QPen(QColor(79, 195, 247), 2, Qt.PenStyle.DashLine)
@@ -124,10 +125,10 @@ class CropOverlay(QWidget):
 
         if self.mode == "rect" and self.start_pt and self.end_pt:
             sel_rect = QRect(self.start_pt, self.end_pt).normalized()
-            # Ausgewählter Bereich aufhellen
+            # Brighten the selected area
             painter.fillRect(sel_rect, QColor(255, 255, 255, 30))
             painter.drawRect(sel_rect)
-            # Maße anzeigen
+            # Show dimensions
             painter.setPen(QPen(QColor(79, 195, 247)))
             painter.setFont(QFont("Monospace", 10))
             painter.drawText(sel_rect.bottomLeft() + QPoint(4, 16),
@@ -138,37 +139,38 @@ class CropOverlay(QWidget):
             painter.setPen(pen2)
             for i in range(len(self.lasso_pts) - 1):
                 painter.drawLine(self.lasso_pts[i], self.lasso_pts[i + 1])
-            # Schlusspunkt verbinden
+            # Connect closing point back to start
             if len(self.lasso_pts) > 2:
                 painter.setPen(QPen(QColor(79, 195, 247, 120), 1, Qt.PenStyle.DotLine))
                 painter.drawLine(self.lasso_pts[-1], self.lasso_pts[0])
 
 
 # ══════════════════════════════════════════════════════════════
-#  SHAPE PLACER OVERLAY: Form auf dem Bild platzieren
+#  SHAPE PLACER OVERLAY: place a shape on the image
 # ══════════════════════════════════════════════════════════════
 
 class ShapePlacerOverlay(QWidget):
     """
-    Overlay für das Text-to-Drawing Feature.
-    Zeigt eine Vorschau der gewählten Form unter dem Mauszeiger.
-    Klick → Form wird an dieser Position permanent auf das Bild gezeichnet.
-    Escape → Abbruch.
+    Overlay for the text-to-drawing feature.
+    Shows a live preview of the chosen shape under the mouse cursor.
+    Click → shape is permanently drawn on the image at that position.
+    Escape → cancel.
     """
-    shape_placed = pyqtSignal(str, int, int)  # shape_key, x, y (Bildkoordinaten)
+    shape_placed = pyqtSignal(str, int, int)  # shape_key, x, y (image coordinates)
     cancelled    = pyqtSignal()
 
     def __init__(self, parent, shape_key: str, size: int,
                  color: QColor, zoom: float):
         """
-        Erstellt das Shape-Placer-Overlay.
+        Create the shape placer overlay.
 
-        Parameter:
-          parent    – Eltern-Widget (ImageCanvas)
-          shape_key – Schlüssel der zu platzierenden Form aus SHAPE_LIBRARY
-          size      – Gewünschte Formgröße in Bildpixeln
-          color     – Zeichenfarbe (QColor)
-          zoom      – Aktueller Zoom-Faktor des Canvas (zum Umrechnen der Koordinaten)
+        Parameters
+        ----------
+        parent    : Parent widget (ImageCanvas).
+        shape_key : Key of the shape to place, looked up in SHAPE_LIBRARY.
+        size      : Desired shape size in image pixels.
+        color     : Drawing colour (QColor).
+        zoom      : Current canvas zoom factor, used to convert coordinates.
         """
         super().__init__(parent)
         self.shape_key  = shape_key
@@ -186,22 +188,22 @@ class ShapePlacerOverlay(QWidget):
         self.setFocus()
 
     def keyPressEvent(self, event):
-        """Escape → Abbruch; sendet cancelled-Signal und schließt das Overlay."""
+        """Escape → cancel; emits the cancelled signal and closes the overlay."""
         if event.key() == Qt.Key.Key_Escape:
             self.cancelled.emit(); self.close()
 
     def mouseMoveEvent(self, event):
-        """Mauszeiger verfolgen für Live-Vorschau der Form unter dem Cursor."""
+        """Track the mouse cursor to update the live shape preview."""
         self._mouse_pos = event.pos()
         self.update()
 
     def mousePressEvent(self, event):
         """
-        Linker Mausklick: Form platzieren.
-        Overlay-Koordinaten werden durch zoom geteilt um echte Bildpixel zu erhalten.
+        Left mouse click: place the shape.
+        Overlay coordinates are divided by zoom to obtain true image pixels.
         """
         if event.button() == Qt.MouseButton.LeftButton:
-            # Overlay-Position → Bildkoordinaten durch Division mit Zoom-Faktor
+            # Overlay position → image coordinates by dividing by the zoom factor
             ix = int(event.pos().x() / self.zoom)
             iy = int(event.pos().y() / self.zoom)
             self.shape_placed.emit(self.shape_key, ix, iy)
@@ -209,32 +211,32 @@ class ShapePlacerOverlay(QWidget):
 
     def paintEvent(self, event):
         """
-        Zeichnet die Form-Vorschau unter dem Mauszeiger.
-        Halbtransparent um das Bild darunter sichtbar zu lassen.
+        Draw the shape preview under the mouse cursor.
+        Semi-transparent so the image below remains visible.
         """
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # Hintergrund leicht abdunkeln
+        # Slightly darken the background
         painter.fillRect(self.rect(), QColor(0, 0, 0, 40))
 
         mx, my = self._mouse_pos.x(), self._mouse_pos.y()
         half   = self.shape_size * self.zoom // 2
 
-        # Hilfslinien (Fadenkreuz)
+        # Crosshair guide lines
         pen = QPen(QColor(79, 195, 247, 100), 1, Qt.PenStyle.DashLine)
         painter.setPen(pen)
         painter.drawLine(mx, 0, mx, self.height())
         painter.drawLine(0, my, self.width(), my)
 
-        # Bounding Box der Form
+        # Shape bounding box
         pen2 = QPen(QColor(79, 195, 247, 180), 1, Qt.PenStyle.DotLine)
         painter.setPen(pen2)
         painter.drawRect(int(mx - half), int(my - half),
                          int(self.shape_size * self.zoom),
                          int(self.shape_size * self.zoom))
 
-        # Info-Label
+        # Info label
         painter.setPen(QPen(QColor(79, 195, 247)))
         painter.setFont(QFont("Monospace", 10))
         painter.drawText(mx + int(half) + 8, my - 4,
@@ -242,21 +244,31 @@ class ShapePlacerOverlay(QWidget):
 
 
 # ══════════════════════════════════════════════════════════════
-#  HILFSFUNKTION: Catmull-Rom Spline (für Kurven-Werkzeug)
+#  HELPER FUNCTION: Catmull-Rom spline (for the curve tool)
 # ══════════════════════════════════════════════════════════════
 
 def _catmull_rom_pts(pts, n_per_seg: int = 12) -> list:
     """
-    Erzeugt eine glatte Linienpunktliste durch alle Kontrollpunkte
-    (Catmull-Rom Spline). Gibt eine Liste von QPoints zurück.
+    Generate a smooth list of interpolated points through all control points
+    using a Catmull-Rom spline. Returns a list of QPoints.
 
-    Wird vom Kurven-Werkzeug genutzt:
-      - n_per_seg = Anzahl interpolierter Punkte pro Segment
-      - Mehr = glattere Kurve, mehr Rechenaufwand (12 reicht gut)
+    Used by the curve tool:
+      - n_per_seg : number of interpolated points per segment.
+      - Higher values produce smoother curves at increased computational cost
+        (12 is a good balance).
+
+    Parameters
+    ----------
+    pts      : List of QPoint control points.
+    n_per_seg: Interpolated steps between each pair of control points.
+
+    Returns
+    -------
+    List of QPoint objects tracing the smooth spline.
     """
     if len(pts) < 2:
         return list(pts)
-    ext = [pts[0]] + list(pts) + [pts[-1]]  # Randpunkte verdoppeln
+    ext = [pts[0]] + list(pts) + [pts[-1]]  # duplicate boundary points
     result = []
     for i in range(1, len(ext) - 2):
         p0, p1, p2, p3 = ext[i-1], ext[i], ext[i+1], ext[i+2]
@@ -276,70 +288,71 @@ def _catmull_rom_pts(pts, n_per_seg: int = 12) -> list:
 
 
 # ══════════════════════════════════════════════════════════════
-#  DRAW OVERLAY: Zeichnen direkt auf dem Bild
+#  DRAW OVERLAY: draw directly on the image
 # ══════════════════════════════════════════════════════════════
 
 class DrawOverlay(QWidget):
     """
-    Zeichen-Overlay — implementiert Paint/GIMP-ähnliche Werkzeuge.
+    Drawing overlay — implements Paint/GIMP-style tools.
 
-    ARCHITEKTUR (2-Schichten-Modell):
+    ARCHITECTURE (two-layer model):
     ┌─────────────────────────────────────────┐
-    │  Schicht 1: self._preview (QPixmap)     │  ← Temporär, nur Vorschau
-    │  Freihand-Striche werden hier gerendert │    während Maus bewegt wird
+    │  Layer 1: self._preview (QPixmap)       │  ← Temporary, preview only
+    │  Freehand strokes are rendered here     │    while the mouse is moving
     ├─────────────────────────────────────────┤
-    │  Schicht 2: PIL-Image (permanent)       │  ← Echtes Bild, wird nur
-    │  Erst nach mouseRelease aktualisiert    │    bei drawing_done geändert
+    │  Layer 2: PIL Image (permanent)         │  ← Real image, only updated
+    │  Updated after mouseRelease             │    when drawing_done fires
     └─────────────────────────────────────────┘
 
-    WERKZEUGE und ihre PIL-Implementierung:
-      'pen'     → ImageDraw.line(), Breite = brush_size / zoom
-      'brush'   → wie pen, aber Alpha=160 (halbtransparent) + 3× breiter
-      'eraser'  → wie pen, aber Farbe=Weiß (übermalt)
-      'line'    → ImageDraw.line() von Start- zu Endpunkt
-      'rect'    → ImageDraw.rectangle() nur Umriss
-      'ellipse' → ImageDraw.ellipse() nur Umriss
+    TOOLS and their PIL implementation:
+      'pen'     → ImageDraw.line(), width = brush_size / zoom
+      'brush'   → like pen, but alpha=160 (semi-transparent) + 3× wider
+      'eraser'  → like pen, but colour=white (paints over)
+      'line'    → ImageDraw.line() from start to end point
+      'rect'    → ImageDraw.rectangle() outline only
+      'ellipse' → ImageDraw.ellipse() outline only
       'text'    → QInputDialog → ImageDraw.text()
 
-    ZOOM-KORREKTUR:
-    Overlay-Koordinaten sind in Bildschirmpixeln (zoomed).
-    PIL braucht echte Bildpixel → Division durch zoom-Faktor.
-    Beispiel: Klick bei x=200, zoom=2.0 → Bildpixel x=100
+    ZOOM CORRECTION:
+    Overlay coordinates are in screen pixels (zoomed).
+    PIL needs true image pixels → divide by the zoom factor.
+    Example: click at x=200, zoom=2.0 → image pixel x=100
 
     Signal:
       drawing_done(fn) → ImageEditor._apply_draw_fn()
-      fn ist eine Lambda-Funktion die PIL-Image → PIL-Image transformiert
+      fn is a callable that transforms a PIL Image → PIL Image
     """
-    drawing_done = pyqtSignal(object)  # PIL-Zeichenfunktion als Callable
+    drawing_done = pyqtSignal(object)  # PIL drawing function as a callable
 
     def __init__(self, parent, tool: str, color: QColor,
                  size: int, zoom: float, texture=None):
         """
-        Erstellt das Zeichen-Overlay.
+        Create the drawing overlay.
 
-        Parameter:
-          parent  – Eltern-Widget (ImageCanvas)
-          tool    – Werkzeug-Name: 'pen', 'brush', 'eraser', 'line', 'rect',
-                    'ellipse', 'text', 'blur', 'curve', 'texture_brush'
-          color   – Aktuelle Zeichenfarbe (QColor)
-          size    – Pinselgröße in Overlay-Pixeln
-          zoom    – Zoom-Faktor des Canvas (für Koordinatenumrechnung)
-          texture – Optional: PIL RGBA-Bild als Textur für den Textur-Pinsel
+        Parameters
+        ----------
+        parent  : Parent widget (ImageCanvas).
+        tool    : Tool name: 'pen', 'brush', 'eraser', 'line', 'rect',
+                  'ellipse', 'text', 'blur', 'curve', 'texture_brush'.
+        color   : Current drawing colour (QColor).
+        size    : Brush size in overlay pixels.
+        zoom    : Canvas zoom factor, used to convert coordinates.
+        texture : Optional PIL RGBA image used as a texture for the texture brush.
         """
         super().__init__(parent)
         self.tool        = tool
         self.color       = color
         self.brush_size  = size
-        self.zoom        = zoom          # Aktueller Zoom-Faktor des Canvas
-        self.texture     = texture       # PIL RGBA Textur-Bild (oder None)
+        self.zoom        = zoom          # current canvas zoom factor
+        self.texture     = texture       # PIL RGBA texture image (or None)
 
         self.drawing     = False
         self.start_pt    = None
         self.last_pt     = None
-        self.stroke_pts  = []            # Punkte des aktuellen Strichs
-        self.bezier_pts  = []            # Kontrollpunkte für Kurven-Werkzeug
+        self.stroke_pts  = []            # points of the current stroke
+        self.bezier_pts  = []            # control points for the curve tool
 
-        # Temporäres QPixmap für die Vorschau während des Zeichnens
+        # Temporary QPixmap for the preview while drawing
         self._preview    = QPixmap(parent.size())
         self._preview.fill(QColor(0, 0, 0, 0))
 
@@ -347,7 +360,7 @@ class DrawOverlay(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self.setStyleSheet("background: transparent;")
 
-        # Cursor je nach Werkzeug
+        # Cursor shape per tool
         cursors = {
             "pen":             Qt.CursorShape.CrossCursor,
             "brush":           Qt.CursorShape.CrossCursor,
@@ -365,19 +378,19 @@ class DrawOverlay(QWidget):
         self.setFocus()
 
     def keyPressEvent(self, event):
-        """Escape → Overlay schließen und Zeichenmodus beenden."""
+        """Escape → close the overlay and exit drawing mode."""
         if event.key() == Qt.Key.Key_Escape:
             self.close()
 
-    # ── Maus-Ereignisse ─────────────────────────
+    # ── Mouse events ─────────────────────────
 
     def mousePressEvent(self, event):
         """
-        Maustaste gedrückt: Zeichnen beginnen.
-        Für das Kurven-Werkzeug: Linksklick = Punkt hinzufügen, Rechtsklick = abschließen.
-        Für alle anderen Werkzeuge: Linksklick startet den Strich.
+        Mouse button pressed: begin drawing.
+        Curve tool: left click = add point, right click = finalise.
+        All other tools: left click starts the stroke.
         """
-        # ── Kurven-Werkzeug: Links = Punkt hinzufügen, Rechts = Kurve abschließen
+        # ── Curve tool: left = add point, right = finalise curve
         if self.tool == "curve":
             if event.button() == Qt.MouseButton.LeftButton:
                 self.bezier_pts.append(event.pos())
@@ -398,23 +411,23 @@ class DrawOverlay(QWidget):
         self.stroke_pts = [event.pos()]
 
         if self.tool == "text":
-            # Text-Tool: sofort Dialog öffnen
+            # Text tool: open dialog immediately
             self._do_text(event.pos())
             return
 
-        # Freihand-Werkzeuge: ersten Punkt zeichnen
+        # Freehand tools: draw the first point
         if self.tool in ("pen", "brush", "eraser", "blur", "texture_brush"):
             self._draw_point(event.pos())
 
     def mouseMoveEvent(self, event):
         """
-        Mausbewegung verarbeiten:
-        - Freihand-Werkzeuge: Strich-Segment auf den Vorschau-Layer zeichnen
-        - Form-Werkzeuge (Linie, Rect, Ellipse): Nur Vorschau aktualisieren
-        - Kurven-Werkzeug: Live-Vorschau der Segment-Linie zur Mausposition
+        Handle mouse movement:
+        - Freehand tools: draw a stroke segment onto the preview layer.
+        - Shape tools (line, rect, ellipse): update the preview only.
+        - Curve tool: show a live guide line from the last point to the cursor.
         """
         if self.tool == "curve":
-            # Live-Vorschau der letzten Segmentlinie (vor Klick)
+            # Live preview of the next segment line (before click)
             self.last_pt = event.pos()
             self.update()
             return
@@ -423,20 +436,20 @@ class DrawOverlay(QWidget):
         pos = event.pos()
 
         if self.tool in ("pen", "brush", "eraser", "blur", "texture_brush"):
-            # Freihand: Linie vom letzten zum aktuellen Punkt
+            # Freehand: draw a line from the last point to the current point
             self._draw_line(self.last_pt, pos)
             self.stroke_pts.append(pos)
             self.last_pt = pos
         else:
-            # Form-Werkzeuge: nur Vorschau, keine permanenten Punkte
+            # Shape tools: preview only, no permanent points yet
             self.last_pt = pos
             self.update()
 
     def mouseReleaseEvent(self, event):
         """
-        Maustaste losgelassen: Strich abschließen und PIL-Zeichenfunktion erzeugen.
-        Das drawing_done-Signal wird mit der Lambda-Funktion gesendet,
-        die später auf das PIL-Bild angewendet wird.
+        Mouse button released: finalise the stroke and create the PIL draw function.
+        The drawing_done signal is emitted with a callable that will be applied
+        to the PIL image.
         """
         if event.button() != Qt.MouseButton.LeftButton or not self.drawing:
             return
@@ -472,14 +485,26 @@ class DrawOverlay(QWidget):
                 self.color, self.brush_size, self.zoom
             ))
 
-        # Vorschau-Layer leeren
+        # Clear the preview layer
         self._preview.fill(QColor(0, 0, 0, 0))
         self.update()
 
-    # ── Zeichnen auf den Vorschau-Layer ─────────
+    # ── Drawing onto the preview layer ─────────
 
     def _pen_for_tool(self, tool: str, color: QColor, size: int) -> QPen:
-        """Erstellt den passenden QPen für das gewählte Werkzeug."""
+        """
+        Return the appropriate QPen for the given tool.
+
+        Parameters
+        ----------
+        tool  : Tool name string.
+        color : Drawing colour.
+        size  : Base brush size in pixels.
+
+        Returns
+        -------
+        QPen configured for the tool's visual style.
+        """
         if tool == "eraser":
             pen = QPen(QColor(255, 255, 255, 255), size * 2,
                        Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
@@ -498,7 +523,7 @@ class DrawOverlay(QWidget):
         return pen
 
     def _draw_point(self, pos: QPoint):
-        """Zeichnet einen einzelnen Punkt auf den Vorschau-Layer (z.B. beim ersten Klick)."""
+        """Draw a single point onto the preview layer (e.g. on the first click)."""
         painter = QPainter(self._preview)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(self._pen_for_tool(self.tool, self.color, self.brush_size))
@@ -507,7 +532,7 @@ class DrawOverlay(QWidget):
         self.update()
 
     def _draw_line(self, p1: QPoint, p2: QPoint):
-        """Zeichnet ein Liniensegment zwischen zwei Punkten auf den Vorschau-Layer."""
+        """Draw a line segment between two points onto the preview layer."""
         painter = QPainter(self._preview)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(self._pen_for_tool(self.tool, self.color, self.brush_size))
@@ -517,16 +542,16 @@ class DrawOverlay(QWidget):
 
     def paintEvent(self, event):
         """
-        Zeichnet den Vorschau-Layer und die Form-Vorschau.
-        Freihand: aus _preview, Formen: direkt hier gerendert.
+        Draw the preview layer and any shape preview.
+        Freehand strokes come from _preview; shapes are rendered directly here.
         """
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        # Freihand-Vorschau
+        # Freehand preview
         painter.drawPixmap(0, 0, self._preview)
 
-        # Form-Vorschau (Linie, Rechteck, Ellipse)
+        # Shape preview (line, rectangle, ellipse)
         if self.drawing and self.start_pt and self.last_pt:
             pen = self._pen_for_tool(self.tool, self.color, self.brush_size)
             painter.setPen(pen)
@@ -539,43 +564,54 @@ class DrawOverlay(QWidget):
             elif self.tool == "ellipse":
                 painter.drawEllipse(QRect(self.start_pt, self.last_pt).normalized())
 
-        # Kurven-Vorschau: Spline durch alle bisher gesetzten Punkte
+        # Curve preview: spline through all placed points so far
         if self.tool == "curve" and self.bezier_pts:
             pen = self._pen_for_tool("pen", self.color, self.brush_size)
             painter.setPen(pen)
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            # Punkte als kleine Kreise markieren
+            # Mark each control point with a small circle
             dot_pen = QPen(QColor(79, 195, 247), 1)
             painter.setPen(dot_pen)
             for pt in self.bezier_pts:
                 painter.drawEllipse(pt, 5, 5)
-            # Spline zeichnen wenn ≥2 Punkte
+            # Draw the spline when at least 2 points are placed
             if len(self.bezier_pts) >= 2:
                 spline = _catmull_rom_pts(self.bezier_pts)
                 pen2 = self._pen_for_tool("pen", self.color, self.brush_size)
                 painter.setPen(pen2)
                 for i in range(len(spline) - 1):
                     painter.drawLine(spline[i], spline[i + 1])
-            # Hilfslinie vom letzten Punkt zur Maus
+            # Guide line from the last point to the cursor
             if self.last_pt:
                 painter.setPen(QPen(QColor(79, 195, 247, 120), 1,
                                     Qt.PenStyle.DashLine))
                 painter.drawLine(self.bezier_pts[-1], self.last_pt)
-            # Anleitung anzeigen
+            # Usage instructions
             painter.setPen(QPen(QColor(79, 195, 247)))
             painter.setFont(QFont("Monospace", 9))
             painter.drawText(10, 20,
                 f"Kurve: {len(self.bezier_pts)} Punkte — Linksklick = Punkt hinzufügen "
                 f"| Rechtsklick = Abschließen | ESC = Abbrechen")
 
-    # ── PIL-Zeichenfunktionen (permanent auf Bild) ──
+    # ── PIL draw functions (permanent, applied to the image) ──
 
     @staticmethod
     def _make_freehand_fn(pts, tool, color, size, zoom):
         """
-        Gibt eine Funktion zurück die einen Freihand-Strich
-        auf ein PIL-Image zeichnet.
-        zoom wird genutzt um Overlay-Koordinaten in Bildpixel umzurechnen.
+        Return a function that draws a freehand stroke onto a PIL image.
+        zoom is used to convert overlay coordinates to image pixels.
+
+        Parameters
+        ----------
+        pts   : List of QPoint stroke points in overlay (screen) coordinates.
+        tool  : Tool name ('pen', 'brush', or 'eraser').
+        color : Drawing colour (QColor).
+        size  : Brush size in overlay pixels.
+        zoom  : Canvas zoom factor for coordinate conversion.
+
+        Returns
+        -------
+        Callable that accepts and returns a PIL Image.
         """
         def draw(img):
             draw_obj = ImageDraw.Draw(img, "RGBA")
@@ -589,7 +625,7 @@ class DrawOverlay(QWidget):
             else:
                 fill = (r, g, b, 255)
                 w = max(1, int(size / zoom))
-            # Punkte in Bildkoordinaten umrechnen
+            # Convert points to image coordinates
             img_pts = [(int(p.x() / zoom), int(p.y() / zoom)) for p in pts]
             if len(img_pts) == 1:
                 x, y = img_pts[0]
@@ -603,7 +639,7 @@ class DrawOverlay(QWidget):
 
     @staticmethod
     def _make_line_fn(p1, p2, color, size, zoom):
-        """Gibt eine Funktion zurück die eine Linie auf PIL zeichnet."""
+        """Return a function that draws a straight line onto a PIL image."""
         def draw(img):
             d = ImageDraw.Draw(img, "RGBA")
             x1, y1 = int(p1.x() / zoom), int(p1.y() / zoom)
@@ -616,7 +652,7 @@ class DrawOverlay(QWidget):
 
     @staticmethod
     def _make_rect_fn(p1, p2, color, size, zoom):
-        """Gibt eine Funktion zurück die ein Rechteck auf PIL zeichnet."""
+        """Return a function that draws an outlined rectangle onto a PIL image."""
         def draw(img):
             d = ImageDraw.Draw(img, "RGBA")
             x1, y1 = int(p1.x() / zoom), int(p1.y() / zoom)
@@ -631,7 +667,7 @@ class DrawOverlay(QWidget):
 
     @staticmethod
     def _make_ellipse_fn(p1, p2, color, size, zoom):
-        """Gibt eine Funktion zurück die eine Ellipse auf PIL zeichnet."""
+        """Return a function that draws an outlined ellipse onto a PIL image."""
         def draw(img):
             d = ImageDraw.Draw(img, "RGBA")
             x1, y1 = int(p1.x() / zoom), int(p1.y() / zoom)
@@ -647,13 +683,15 @@ class DrawOverlay(QWidget):
     @staticmethod
     def _make_blur_fn(pts, size, zoom):
         """
-        Weichzeichnerpinsel: Gauss-Blur auf kleinen Patches entlang des Strichs.
-        Für jeden Strichpunkt wird ein Bildausschnitt (2×brush_size) unscharf gezeichnet.
+        Return a function implementing a blur brush.
+
+        Applies a Gaussian blur to small patches along the stroke path.
+        Each stroke point blurs a 2×brush_size region of the image.
         """
         def draw(img):
             img = img.convert("RGBA")
             r = max(2, int(size * 2 / zoom))
-            step = max(1, len(pts) // 50)  # Abtastrate für Performance
+            step = max(1, len(pts) // 50)  # sub-sample for performance
             for pt in pts[::step]:
                 x, y = int(pt.x() / zoom), int(pt.y() / zoom)
                 x1, y1 = max(0, x - r), max(0, y - r)
@@ -669,9 +707,9 @@ class DrawOverlay(QWidget):
     @staticmethod
     def _make_curve_fn(pts, color, size, zoom):
         """
-        Gibt eine Funktion zurück die eine glatte Catmull-Rom-Kurve
-        durch alle Kontrollpunkte auf das PIL-Bild zeichnet.
-        Die Kurve wird als dichte Folge von Liniensegmenten gerendert.
+        Return a function that draws a smooth Catmull-Rom curve through all
+        control points onto the PIL image.  The curve is rendered as a dense
+        sequence of short line segments.
         """
         def draw(img):
             spline = _catmull_rom_pts(pts, n_per_seg=16)
@@ -687,10 +725,11 @@ class DrawOverlay(QWidget):
     @staticmethod
     def _make_texture_fn(pts, texture, size, zoom):
         """
-        Textur-Pinsel: Stempelt das Textur-Bild entlang des Strichs.
-        Der Stempel-Abstand ist halb so groß wie die Textur-Breite,
-        damit keine Lücken entstehen.
-        Ist keine Textur geladen, wird nichts gezeichnet.
+        Return a function implementing a texture brush.
+
+        Stamps the texture image repeatedly along the stroke path.  The stamp
+        interval is half the texture width so that no gaps appear.
+        If no texture is loaded, the function is a no-op.
         """
         def draw(img):
             if texture is None:
@@ -703,7 +742,7 @@ class DrawOverlay(QWidget):
             for pt in img_pts[::step]:
                 x = pt[0] - stamp_size // 2
                 y = pt[1] - stamp_size // 2
-                # Transparenz-Maske aus Alpha-Kanal der Textur
+                # Use the texture's alpha channel as the paste mask
                 mask = tex.split()[3]
                 img.paste(tex, (x, y), mask)
             return img
@@ -711,16 +750,16 @@ class DrawOverlay(QWidget):
 
     def _do_text(self, pos: QPoint):
         """
-        Text-Werkzeug: Öffnet einen Eingabe-Dialog und zeichnet den eingegebenen
-        Text an der angeklickten Bildposition.
-        Schriftgröße wird proportional zur Pinselgröße berechnet (size × 3, mindestens 12 pt).
+        Text tool: open an input dialog and draw the entered text at the clicked image position.
+
+        Font size is proportional to brush size (size × 3, minimum 12 pt).
         """
         text, ok = QInputDialog.getText(self, "Text einfügen", "Text:")
         if ok and text:
             zoom = self.zoom
             color = self.color
             size = self.brush_size
-            # Klickposition von Overlay-Koordinaten in echte Bildpixel umrechnen
+            # Convert click position from overlay coordinates to real image pixels
             x = int(pos.x() / zoom)
             y = int(pos.y() / zoom)
 
@@ -729,10 +768,10 @@ class DrawOverlay(QWidget):
                 font_size = max(12, int(size * 3))
                 try:
                     from PIL import ImageFont
-                    # System-Schriftart laden (macOS-Pfad; auf anderen Systemen Fallback auf Standardschrift)
+                    # Try to load the system font (macOS path; falls back to PIL's default on other OS)
                     font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", font_size)
                 except Exception:
-                    font = None   # PIL nutzt intern eine Standardschrift
+                    font = None   # PIL will use its built-in bitmap font
                 d.text((x, y), text,
                        fill=(color.red(), color.green(), color.blue(), 255),
                        font=font)
@@ -743,43 +782,44 @@ class DrawOverlay(QWidget):
 
 
 # ══════════════════════════════════════════════════════════════
-#  TRANSFORM-OVERLAY: Ausschnitt verschieben & skalieren
+#  TRANSFORM OVERLAY: move and scale a layer excerpt
 # ══════════════════════════════════════════════════════════════
 class TransformOverlay(QWidget):
     """
-    Interaktives Overlay um eine ausgeschnittene Ebene zu verschieben
-    und gleichmäßig zu skalieren.
+    Interactive overlay for moving and uniformly scaling a layer.
 
-    Bedienung:
-      • Linksklick + Ziehen  → Objekt verschieben
-      • Mausrad             → Skalieren (+ / -)
-      • Enter               → Änderungen bestätigen
-      • ESC                 → Abbrechen (Originalposition)
+    Controls
+    --------
+    • Left-click + drag → move the object
+    • Mouse wheel       → scale up / down
+    • Enter             → confirm changes
+    • ESC               → cancel (restore original position)
     """
     transform_done = pyqtSignal(int, int, float)   # x, y, scale
     cancelled      = pyqtSignal()
 
     def __init__(self, parent, pil_img, layer_x: int, layer_y: int, zoom: float):
         """
-        Erstellt das Transform-Overlay.
+        Create the transform overlay.
 
-        Parameter:
-          parent   – Eltern-Widget (ImageCanvas)
-          pil_img  – PIL RGBA-Bild der zu transformierenden Ebene
-          layer_x  – Aktuelle X-Position der Ebene in Bildpixeln
-          layer_y  – Aktuelle Y-Position der Ebene in Bildpixeln
-          zoom     – Aktueller Zoom-Faktor des Canvas
+        Parameters
+        ----------
+        parent  : Parent widget (ImageCanvas).
+        pil_img : PIL RGBA image of the layer to transform.
+        layer_x : Current X position of the layer in image pixels.
+        layer_y : Current Y position of the layer in image pixels.
+        zoom    : Current zoom factor of the canvas.
         """
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self.setMouseTracking(True)
         self.setCursor(QCursor(Qt.CursorShape.SizeAllCursor))
 
-        self._pil       = pil_img          # Original PIL RGBA
+        self._pil       = pil_img          # original PIL RGBA image
         self._zoom      = zoom
-        self._ox        = layer_x          # Startposition in Bildkoordinaten
+        self._ox        = layer_x          # starting position in image coordinates
         self._oy        = layer_y
-        self._dx        = 0.0              # Verschiebung in Overlay-Pixeln
+        self._dx        = 0.0              # displacement in overlay pixels
         self._dy        = 0.0
         self._scale     = 1.0
         self._drag_start: QPoint | None = None
@@ -789,18 +829,18 @@ class TransformOverlay(QWidget):
         self.show()
         self.setFocus()
 
-    # ── Hilfsmethoden ────────────────────────────────────────
+    # ── Helpers ──────────────────────────────────────────────
 
     def _update_pixmap(self):
-        """Skaliertes PIL-Bild → QPixmap für die Anzeige."""
+        """Scale the PIL image by the current scale factor and cache it as a QPixmap."""
         w = max(1, int(self._pil.width  * self._scale))
         h = max(1, int(self._pil.height * self._scale))
         scaled = self._pil.resize((w, h), PILImage.Resampling.LANCZOS)
         self._pix = pil_to_qpixmap(scaled)
 
     def _screen_rect(self) -> QRect:
-        """Begrenzungsrahmen des Objekts in Overlay-Koordinaten."""
-        # Objekt-Startpunkt in Overlay-px = (ox + dx/zoom) * zoom = ox*zoom + dx
+        """Return the bounding rectangle of the object in overlay (screen) coordinates."""
+        # Object origin in overlay px = (ox + dx/zoom) * zoom = ox*zoom + dx
         sx = int(self._ox * self._zoom + self._dx)
         sy = int(self._oy * self._zoom + self._dy)
         w  = int(self._pil.width  * self._scale * self._zoom)
@@ -810,13 +850,13 @@ class TransformOverlay(QWidget):
     # ── Events ────────────────────────────────────────────────
 
     def mousePressEvent(self, event):
-        """Linker Mausklick: Verschieben beginnen; Startposition und -versatz merken."""
+        """Left-click: begin dragging — record the start position and current offset."""
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start = event.pos()
             self._drag_orig  = (self._dx, self._dy)
 
     def mouseMoveEvent(self, event):
-        """Mausbewegung: Versatz relativ zum Startpunkt berechnen und Vorschau aktualisieren."""
+        """Mouse move: compute offset relative to drag start and refresh the preview."""
         if self._drag_start is not None:
             delta = event.pos() - self._drag_start
             self._dx = self._drag_orig[0] + delta.x()
@@ -824,15 +864,15 @@ class TransformOverlay(QWidget):
             self.update()
 
     def mouseReleaseEvent(self, event):
-        """Maustaste losgelassen: Verschieben beenden."""
+        """Mouse button released: end drag mode."""
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag_start = None
 
     def wheelEvent(self, event):
         """
-        Mausrad: Skalierung anpassen.
-        Faktor 1.1 pro Scroll-Schritt (10° = 1 Schritt).
-        Bereich 0.05–20× (5% bis 2000% des Originals).
+        Mouse wheel: adjust the scale factor.
+        Factor 1.1 per scroll step (120 delta units = 1 step).
+        Clamped to the range 0.05–20× (5 % to 2000 % of original size).
         """
         steps  = event.angleDelta().y() / 120
         factor = 1.1 ** steps
@@ -842,12 +882,12 @@ class TransformOverlay(QWidget):
 
     def keyPressEvent(self, event):
         """
-        Enter → Transform bestätigen: Overlay-Verschiebung in Bildkoordinaten umrechnen
-        und transform_done-Signal senden.
-        Escape → Abbruch.
+        Enter → confirm transform: convert overlay displacement to image coordinates
+        and emit the transform_done signal.
+        Escape → cancel.
         """
         if event.key() == Qt.Key.Key_Return or event.key() == Qt.Key.Key_Enter:
-            # Overlay-Verschiebung → Bildkoordinaten durch Division mit Zoom-Faktor
+            # Convert overlay displacement to image coordinates by dividing by zoom
             new_x = int(self._ox + self._dx / self._zoom)
             new_y = int(self._oy + self._dy / self._zoom)
             self.transform_done.emit(new_x, new_y, self._scale)
@@ -857,10 +897,10 @@ class TransformOverlay(QWidget):
             self.close()
 
     def paintEvent(self, _event):
-        """Zeichnet das skalierte Bild mit blauem Rahmen und Hinweis-Text auf das Overlay."""
+        """Draw the scaled image with a blue dashed border and a hint text on the overlay."""
         p = QPainter(self)
         r = self._screen_rect()
-        # Bild zeichnen (mit Zoom)
+        # Draw the image scaled to the current zoom level
         rz = QRect(r.x(), r.y(),
                    int(self._pix.width()  * self._zoom),
                    int(self._pix.height() * self._zoom))
@@ -868,14 +908,14 @@ class TransformOverlay(QWidget):
                      self._pix.scaled(rz.width(), rz.height(),
                                       Qt.AspectRatioMode.IgnoreAspectRatio,
                                       Qt.TransformationMode.SmoothTransformation))
-        # Blauen Rahmen zeichnen
+        # Draw blue dashed border around the object
         p.setPen(QPen(QColor("#4fc3f7"), 2, Qt.PenStyle.DashLine))
         p.drawRect(rz)
-        # Hinweis-Text
+        # Hint text above the object
         p.setPen(QColor("#ffffff"))
         p.setFont(QFont("Arial", 9))
         p.drawText(rz.x(), rz.y() - 6,
-                   "Ziehen=Verschieben  |  Mausrad=Skalieren  |  Enter=OK  |  ESC=Abbruch")
+                   "Drag=Move  |  Scroll=Scale  |  Enter=OK  |  ESC=Cancel")
         p.end()
 
 
@@ -885,23 +925,26 @@ class TransformOverlay(QWidget):
 
 class MovableRectOverlay(QWidget):
     """
-    Zeigt das Auswahlrechteck nach dem Zeichnen und erlaubt Verschieben
-    und Skalieren (Ecken/Kanten ziehen) vor dem finalen Zuschneiden.
+    Displays the selection rectangle after drawing and allows moving
+    and resizing (corner/edge handles) before the final crop is applied.
 
-    Enter = Zuschneiden bestätigen  |  ESC = Abbrechen
+    Enter = confirm crop  |  ESC = cancel
     """
-    confirmed = pyqtSignal(object)   # QRect in Overlay-Koordinaten
+    confirmed = pyqtSignal(object)   # QRect in overlay coordinates
     cancelled = pyqtSignal()
 
-    _HS = 10   # Handle-Größe in Pixeln
+    _HS = 10   # Handle size in pixels
 
     def __init__(self, parent, rect: QRect):
         """
-        Erstellt das verschiebbare Auswahlrechteck.
+        Create the movable selection rectangle overlay.
 
-        Parameter:
-          parent – Eltern-Widget (ImageCanvas)
-          rect   – Initiales Auswahlrechteck in Overlay-Koordinaten
+        Parameters
+        ----------
+        parent : QWidget
+            Parent widget (ImageCanvas).
+        rect : QRect
+            Initial selection rectangle in overlay coordinates.
         """
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
@@ -919,9 +962,9 @@ class MovableRectOverlay(QWidget):
 
     def _handles(self) -> dict:
         """
-        Gibt ein Dictionary mit den 8 Skalierungs-Handles des Auswahlrechtecks zurück.
-        Jeder Handle ist ein kleines QRect an der entsprechenden Ecke oder Kante.
-        Schlüssel: 'tl', 'tm', 'tr', 'ml', 'mr', 'bl', 'bm', 'br'
+        Return a dictionary of the 8 resize handles for the selection rectangle.
+        Each handle is a small QRect centred on the corresponding corner or edge midpoint.
+        Keys: 'tl', 'tm', 'tr', 'ml', 'mr', 'bl', 'bm', 'br'
         (t=top, b=bottom, l=left, r=right, m=middle)
         """
         r  = self._rect
@@ -944,7 +987,7 @@ class MovableRectOverlay(QWidget):
     }
 
     def _hit(self, pos: QPoint) -> str | None:
-        """Prüft ob ein Handle an der Mauszeigerposition liegt. Gibt Handle-Name oder None zurück."""
+        """Return the name of the handle under *pos*, or None if no handle was hit."""
         for name, h in self._handles().items():
             if h.contains(pos): return name
         return None
@@ -953,8 +996,8 @@ class MovableRectOverlay(QWidget):
 
     def mousePressEvent(self, event):
         """
-        Maustaste gedrückt: Modus bestimmen.
-        Handle getroffen → skalieren; Innenbereich → verschieben; außen → nichts.
+        Mouse button pressed: determine interaction mode.
+        Handle hit → resize; inside rectangle → move; outside → do nothing.
         """
         pos = event.pos()
         h   = self._hit(pos)
@@ -969,8 +1012,8 @@ class MovableRectOverlay(QWidget):
 
     def mouseMoveEvent(self, event):
         """
-        Mausbewegung: Cursor anpassen (kein Drag) oder Rechteck anpassen (während Drag).
-        Verschieben, Ecken und Kanten werden alle hier behandelt.
+        Mouse move: update cursor shape (when not dragging) or adjust the rectangle
+        (while dragging). Move, corner, and edge interactions are all handled here.
         """
         pos = event.pos()
         if self._mode is None:
@@ -1000,11 +1043,11 @@ class MovableRectOverlay(QWidget):
         self.update()
 
     def mouseReleaseEvent(self, _event):
-        """Maustaste losgelassen: Drag-Modus beenden."""
+        """Mouse button released: end drag mode."""
         self._mode = None
 
     def keyPressEvent(self, event):
-        """Enter → Zuschneiden bestätigen (sendet confirmed-Signal). Escape → Abbruch."""
+        """Enter → confirm crop (emits confirmed signal). Escape → cancel."""
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             self.confirmed.emit(self._rect)
             self.close()
@@ -1014,33 +1057,33 @@ class MovableRectOverlay(QWidget):
 
     def paintEvent(self, _event):
         """
-        Zeichnet das Overlay: Außenbereich abgedunkelt (4 Rechtecke), Auswahlrahmen
-        gestrichelt, Skalierungs-Handles als blaue Quadrate, Hinweis-Leiste unten.
+        Draw the overlay: dimmed area outside the selection (4 rectangles), a dashed
+        selection border, blue square resize handles, and a hint bar at the bottom.
         """
         p = QPainter(self)
         r = self._rect
-        # Aussenbereich abdunkeln (4 Rechtecke um die Auswahl)
+        # Dim the area outside the selection with 4 surrounding rectangles
         dim = QColor(0, 0, 0, 100)
         p.fillRect(0, 0, self.width(), r.top(),                      dim)
         p.fillRect(0, r.bottom(), self.width(), self.height(),        dim)
         p.fillRect(0, r.top(), r.left(), r.height(),                  dim)
         p.fillRect(r.right(), r.top(), self.width() - r.right(), r.height(), dim)
-        # Auswahlrahmen
+        # Dashed selection border
         p.setPen(QPen(QColor("#4fc3f7"), 2, Qt.PenStyle.DashLine))
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawRect(r)
-        # Handles
+        # Resize handles
         p.setBrush(QBrush(QColor("#4fc3f7")))
         p.setPen(QPen(QColor("#ffffff"), 1))
         for h in self._handles().values():
             p.drawRect(h)
-        # Hinweis-Leiste
+        # Hint bar at the bottom
         bar_y = self.height() - 22
         p.fillRect(0, bar_y, self.width(), 22, QColor(0, 0, 0, 180))
         p.setPen(QColor("#ffffff"))
         p.setFont(QFont("Arial", 9))
         p.drawText(8, self.height() - 6,
-                   "Ziehen=Verschieben  |  Ecken=Skalieren  |  Enter=Zuschneiden  |  ESC=Abbruch")
+                   "Drag=Move  |  Corners=Resize  |  Enter=Crop  |  ESC=Cancel")
         p.end()
 
 
@@ -1050,21 +1093,24 @@ class MovableRectOverlay(QWidget):
 
 class MovableLassoOverlay(QWidget):
     """
-    Nach dem Zeichnen des Lassos: Polygon per Ziehen verschieben,
-    bevor der Zuschnitt angewendet wird.
+    After the lasso has been drawn: drag the polygon to reposition it
+    before the crop is applied.
 
-    Enter = Zuschneiden  |  ESC = Abbrechen
+    Enter = crop  |  ESC = cancel
     """
-    confirmed = pyqtSignal(list)   # list of QPoint (verschoben)
+    confirmed = pyqtSignal(list)   # list of QPoint (shifted)
     cancelled = pyqtSignal()
 
     def __init__(self, parent, points: list):
         """
-        Erstellt das verschiebbare Lasso-Overlay.
+        Create the movable lasso overlay.
 
-        Parameter:
-          parent – Eltern-Widget (ImageCanvas)
-          points – Liste von QPoint-Objekten, die das Lasso-Polygon definieren
+        Parameters
+        ----------
+        parent : QWidget
+            Parent widget (ImageCanvas).
+        points : list of QPoint
+            Points that define the lasso polygon.
         """
         super().__init__(parent)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
@@ -1079,7 +1125,7 @@ class MovableLassoOverlay(QWidget):
         self.setFocus()
 
     def _poly_path(self) -> QPainterPath:
-        """Erstellt einen QPainterPath aus den Lasso-Punkten unter Berücksichtigung des aktuellen Versatzes."""
+        """Build a QPainterPath from the lasso points, shifted by the current drag offset."""
         path = QPainterPath()
         if not self._pts: return path
         ox, oy = self._offset.x(), self._offset.y()
@@ -1091,36 +1137,36 @@ class MovableLassoOverlay(QWidget):
         return path
 
     def _inside(self, pos: QPoint) -> bool:
-        """Prüft ob ein Punkt innerhalb des Lasso-Polygons liegt (für Drag-Erkennung)."""
+        """Return True if *pos* lies inside the lasso polygon (used for drag detection)."""
         return self._poly_path().contains(QPointF(pos.x(), pos.y()))
 
     def mousePressEvent(self, event):
-        """Klick innerhalb des Polygons startet das Verschieben; außerhalb wird ignoriert."""
+        """Click inside the polygon to start dragging; clicks outside are ignored."""
         if self._inside(event.pos()):
             self._drag_start = event.pos()
             self._drag_orig  = QPoint(self._offset)
 
     def mouseMoveEvent(self, event):
-        """Versatz des Polygons aktualisieren (Drag) oder Cursor-Form anpassen (kein Drag)."""
+        """Update the polygon offset while dragging, or update the cursor shape otherwise."""
         if self._drag_start is not None:
             d = event.pos() - self._drag_start
             self._offset = self._drag_orig + d
             self.update()
         else:
-            # Cursor: Verschieben-Symbol innerhalb, Pfeil außerhalb
+            # Move cursor inside the polygon, arrow cursor outside
             cursor = Qt.CursorShape.SizeAllCursor if self._inside(event.pos()) \
                      else Qt.CursorShape.ArrowCursor
             self.setCursor(QCursor(cursor))
 
     def mouseReleaseEvent(self, _event):
-        """Drag beenden."""
+        """End drag mode."""
         self._drag_start = None
 
     def keyPressEvent(self, event):
-        """Enter → Lasso mit aktuellem Versatz bestätigen. Escape → Abbruch."""
+        """Enter → confirm lasso with the current offset. Escape → cancel."""
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
             ox, oy = self._offset.x(), self._offset.y()
-            # Verschobene Punkte an confirmed-Signal übergeben
+            # Pass the shifted points to the confirmed signal
             self.confirmed.emit([QPoint(p.x()+ox, p.y()+oy) for p in self._pts])
             self.close()
         elif event.key() == Qt.Key.Key_Escape:
@@ -1128,7 +1174,7 @@ class MovableLassoOverlay(QWidget):
             self.close()
 
     def paintEvent(self, _event):
-        """Zeichnet das verschobene Lasso-Polygon mit gestricheltem Rahmen und Hinweis-Leiste."""
+        """Draw the shifted lasso polygon with a dashed border and a hint bar at the bottom."""
         p = QPainter(self)
         p.setPen(QPen(QColor("#4fc3f7"), 2, Qt.PenStyle.DashLine))
         p.setBrush(Qt.BrushStyle.NoBrush)
@@ -1138,49 +1184,55 @@ class MovableLassoOverlay(QWidget):
         p.setPen(QColor("#ffffff"))
         p.setFont(QFont("Arial", 9))
         p.drawText(8, self.height() - 6,
-                   "Ziehen=Verschieben  |  Enter=Zuschneiden  |  ESC=Abbruch")
+                   "Drag=Move  |  Enter=Crop  |  ESC=Cancel")
         p.end()
 
 
 # ══════════════════════════════════════════════════════════════
-#  ZAUBERSTAB-OVERLAY: Toleranzbasierte Farbauswahl
+#  MAGIC WAND OVERLAY: Tolerance-based colour selection
 # ══════════════════════════════════════════════════════════════
 
 class MagicWandOverlay(QWidget):
     """
-    Zauberstab-Werkzeug (wie Photoshop Magic Wand).
+    Magic wand selection tool (similar to Photoshop Magic Wand).
 
-    FUNKTIONSWEISE (Flood-Fill mit Farb-Toleranz):
-    1. Nutzer klickt auf einen Pixel → Startfarbe ermitteln
-    2. BFS (Breiten-Suche) von diesem Pixel ausgehend:
-       Nachbarpixel werden zur Auswahl hinzugefügt wenn ihre Farbe
-       innerhalb der Toleranz liegt (Summe |R-diff|+|G-diff|+|B-diff|)
-    3. Ergebnis: PIL-Maske (L-Mode, 255=ausgewählt, 0=nicht ausgewählt)
-    4. Shift+Klick = weiteren Bereich zur Auswahl hinzufügen
+    HOW IT WORKS (flood-fill with colour tolerance):
+    1. User clicks a pixel → seed colour is determined.
+    2. PIL's floodfill() expands outward from that pixel:
+       neighbouring pixels are added to the selection if their colour
+       is within the tolerance (sum |R-diff| + |G-diff| + |B-diff|).
+    3. Result: a PIL mask (mode "L", 255 = selected, 0 = not selected).
+    4. Shift+click = add another region to the existing selection.
 
-    Signale:
-      selection_ready(mask) → Auswahl-Maske an ImageEditor übergeben
-      cancelled             → Werkzeug abbrechen
+    Signals
+    -------
+    selection_ready(mask) : emit the selection mask to the ImageEditor.
+    cancelled             : abort the tool.
     """
     selection_ready = pyqtSignal(object)   # PIL "L"-Bild (Maske)
     cancelled       = pyqtSignal()
 
     def __init__(self, parent, pil_image, tolerance: int, zoom: float):
         """
-        Erstellt das Zauberstab-Overlay.
+        Create the magic wand overlay.
 
-        Parameter:
-          parent    – Eltern-Widget (ImageCanvas)
-          pil_image – PIL-Bild, auf dem die Farb-Auswahl durchgeführt wird
-          tolerance – Farb-Toleranz für den Flood-Fill (0 = exakt, 100 = sehr breit)
-          zoom      – Aktueller Zoom-Faktor des Canvas (für Koordinatenumrechnung)
+        Parameters
+        ----------
+        parent : QWidget
+            Parent widget (ImageCanvas).
+        pil_image : PIL.Image
+            The image on which colour selection is performed.
+        tolerance : int
+            Colour tolerance for the flood-fill (0 = exact match, 100 = very wide).
+        zoom : float
+            Current canvas zoom factor, used to convert click coordinates to image pixels.
         """
         super().__init__(parent)
         self._pil      = pil_image.convert("RGBA")
         self._tol      = tolerance
         self._zoom     = zoom
         self._mask     = PILImage.new("L", pil_image.size, 0)
-        self._ovr_pix  = None        # QPixmap der Auswahl-Überlagerung
+        self._ovr_pix  = None        # QPixmap of the selection overlay
 
         self.setGeometry(parent.rect())
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
@@ -1191,7 +1243,7 @@ class MagicWandOverlay(QWidget):
         self.setFocus()
 
     def keyPressEvent(self, event):
-        """Escape → Auswahl abbrechen. Enter → Maske bestätigen und an ImageEditor übergeben."""
+        """Escape → cancel selection. Enter → confirm mask and pass it to the ImageEditor."""
         if event.key() == Qt.Key.Key_Escape:
             self.cancelled.emit(); self.close()
         elif event.key() == Qt.Key.Key_Return:
@@ -1199,19 +1251,19 @@ class MagicWandOverlay(QWidget):
 
     def mousePressEvent(self, event):
         """
-        Klick auf das Bild: Flood-Fill ab der angeklickten Position ausführen.
-        Shift-gedrückt: bestehende Auswahl erweitern (additive Auswahl).
-        Ohne Shift: neue Auswahl ersetzen die alte.
+        Click on the image: run flood-fill from the clicked position.
+        Shift held: extend the existing selection (additive mode).
+        Without Shift: replace the existing selection with the new one.
         """
         if event.button() != Qt.MouseButton.LeftButton:
             return
-        # Overlay-Koordinaten in echte Bildpixel umrechnen (Zoom-Korrektur)
+        # Convert overlay coordinates to image pixels (correcting for zoom)
         ix = max(0, min(int(event.pos().x() / self._zoom), self._pil.width  - 1))
         iy = max(0, min(int(event.pos().y() / self._zoom), self._pil.height - 1))
         add = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
         new_mask = self._flood_fill(ix, iy)
         if add:
-            # Additive Auswahl: Vereinigung beider Masken (heller Wert gewinnt)
+            # Additive selection: union of both masks (brighter value wins)
             self._mask = ImageChops.lighter(self._mask, new_mask)
         else:
             self._mask = new_mask
@@ -1220,22 +1272,22 @@ class MagicWandOverlay(QWidget):
 
     def _flood_fill(self, sx: int, sy: int) -> "PILImage.Image":
         """
-        Flood-Fill mit PIL's eigener floodfill()-Funktion (C-Ebene, schnell).
-        Trick: Fülle ein Hilfsbild mit einer Marker-Farbe → Differenzbild
-        ergibt die Maske aller gefüllten Pixel.
+        Flood-fill using PIL's built-in floodfill() (C-level, fast).
+        Trick: fill a copy of the image with a marker colour, then diff the
+        original against the copy — changed pixels are the filled region.
         """
         rgb   = self._pil.convert("RGB")
         temp  = rgb.copy()
-        # Marker-Farbe: sehr spezifisches Magenta (in Fotos extrem selten)
+        # Marker colour: a very specific magenta extremely unlikely to appear in photos
         marker = (254, 1, 254)
         ImageDraw.floodfill(temp, (sx, sy), marker, thresh=self._tol * 3)
-        # Wo hat sich das Bild verändert → dort wurde gefüllt
+        # Pixels that changed → those were filled by floodfill
         diff  = ImageChops.difference(rgb, temp).convert("L")
         mask  = diff.point([0] + [255] * 255)
         return mask
 
     def _build_overlay(self):
-        """Blau-transparentes Overlay über die Auswahl legen."""
+        """Composite a semi-transparent blue overlay onto the selected region."""
         blue  = PILImage.new("RGBA", self._mask.size, (79, 195, 247, 100))
         empty = PILImage.new("RGBA", self._mask.size, (0,  0,   0,   0))
         ovr   = PILImage.composite(blue, empty, self._mask)
@@ -1244,15 +1296,15 @@ class MagicWandOverlay(QWidget):
         self._ovr_pix = pil_to_qpixmap(ovr.resize((sw, sh), PILImage.Resampling.NEAREST))
 
     def paintEvent(self, event):
-        """Zeichnet das blaue Auswahl-Overlay und den Bedienungs-Hinweis-Text."""
+        """Draw the blue selection overlay and the usage hint text."""
         painter = QPainter(self)
         if self._ovr_pix:
             painter.drawPixmap(0, 0, self._ovr_pix)
         painter.setPen(QPen(QColor(79, 195, 247)))
         painter.setFont(QFont("Monospace", 9))
         painter.drawText(10, 20,
-            "Zauberstab: Klick = auswählen  |  Shift+Klick = hinzufügen  "
-            "|  Enter = übernehmen  |  ESC = abbrechen")
+            "Magic Wand: Click = select  |  Shift+Click = add to selection  "
+            "|  Enter = apply  |  ESC = cancel")
         painter.end()
 
 

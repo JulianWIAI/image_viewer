@@ -1,8 +1,8 @@
 """
 sbs/dialogs.py
-Dialog-Klassen für den SBS Bildeditor:
+Dialog classes for the SBS image editor:
   FilterPreviewDialog, GifEditorDialog.
-Enthält auch die internen Filterfunktionen (_cf_sepia, _cf_cool, etc.).
+Also contains the internal collage filter functions (_cf_sepia, _cf_cool, etc.).
 """
 import io, math, os
 
@@ -25,18 +25,22 @@ from .utils import pil_to_qpixmap
 
 class FilterPreviewDialog(QDialog):
     """
-    Zeigt alle verfügbaren Filter als 100px-Thumbnails in einem 5×4-Grid.
-    Klick auf ein Thumbnail → Dialog schließt, Filter wird vom Aufrufer angewendet.
+    Displays all available filters as 100 px thumbnails arranged in a 5-column grid.
+    Clicking a thumbnail closes the dialog and signals the caller to apply that filter.
 
-    Die Thumbnails werden von ImageEditor._generate_filter_previews() vorberechnet
-    und als dict {filtername: QPixmap} übergeben.
+    Thumbnails are pre-computed by ImageEditor._generate_filter_previews() and
+    passed in as a dict mapping filter name to QPixmap.
     """
     def __init__(self, parent, previews: dict):
         """
-        Erstellt den Filter-Vorschau-Dialog.
-        Parameter:
-          parent   – Eltern-Widget
-          previews – Dict {filtername: QPixmap} mit vorberechneten Thumbnails
+        Initialise the filter preview dialog.
+
+        Parameters
+        ----------
+        parent : QWidget
+            Parent widget (the main ImageEditor window).
+        previews : dict
+            Mapping of {filter_name: QPixmap} with pre-rendered thumbnails.
         """
         super().__init__(parent)
         self.setWindowTitle("🖼  Filter-Vorschau — alle Filter auf einen Blick")
@@ -89,7 +93,7 @@ class FilterPreviewDialog(QDialog):
                 Qt.TransformationMode.SmoothTransformation))
             img_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-            # Kurzname: Emoji + Text ohne führende Leerzeichen
+            # Short display name: emoji + text with any leading separator stripped
             short = name.strip().lstrip("─ ")
             if len(short) > 22:
                 short = short[:22] + "…"
@@ -116,20 +120,29 @@ class FilterPreviewDialog(QDialog):
         layout.addWidget(btn_cancel, alignment=Qt.AlignmentFlag.AlignRight)
 
     def _select(self, name: str):
-        """Speichert den gewählten Filternamen und schließt den Dialog mit Accept."""
+        """
+        Store the chosen filter name and close the dialog with an Accept result.
+
+        Parameters
+        ----------
+        name : str
+            The filter name corresponding to the thumbnail that was clicked.
+        """
         self.chosen_filter = name
         self.accept()
 
 
 # ══════════════════════════════════════════════════════════════
-#  COLLAGE-FILTER: Standalone PIL-Transforms für den Collage-Editor
-#  Unabhängig von ImageEditor – direkt auf PIL-Images anwendbar.
+#  COLLAGE FILTERS: Standalone PIL transforms for the collage editor.
+#  Independent of ImageEditor — can be applied directly to PIL images.
 # ══════════════════════════════════════════════════════════════
 
 def _cf_sepia(img):
     """
-    Sepia-Filter für Collage-Zellen: Graustufenbild mit bräunlichem Ton.
-    Rot-Kanal +10%, Grün-Kanal -10%, Blau-Kanal -30% → warmer Vintage-Look.
+    Apply a sepia filter to a collage cell image.
+
+    Converts to greyscale, then tints the channels to produce a warm vintage look:
+    red channel +10 %, green channel -10 %, blue channel -30 %.
     """
     g = ImageOps.grayscale(img.convert("RGB"))
     return PILImage.merge("RGB", (
@@ -140,8 +153,9 @@ def _cf_sepia(img):
 
 def _cf_cool(img):
     """
-    Kühler-Ton-Filter für Collage-Zellen: Rot -20, Blau +30.
-    Simuliert einen Kälte- oder Morgengrauen-Farbstich.
+    Apply a cool-tone filter to a collage cell image: red -20, blue +30.
+
+    Simulates a cold or early-morning colour cast.
     """
     r, g, b, *a = img.convert("RGBA").split()
     alpha = a[0] if a else PILImage.new("L", img.size, 255)
@@ -151,8 +165,9 @@ def _cf_cool(img):
 
 def _cf_warm(img):
     """
-    Warmer-Ton-Filter für Collage-Zellen: Rot +30, Blau -20.
-    Simuliert Sonnenuntergangs- oder Kerzenlicht-Farbstich.
+    Apply a warm-tone filter to a collage cell image: red +30, blue -20.
+
+    Simulates a sunset or candlelight colour cast.
     """
     r, g, b, *a = img.convert("RGBA").split()
     alpha = a[0] if a else PILImage.new("L", img.size, 255)
@@ -162,8 +177,10 @@ def _cf_warm(img):
 
 def _cf_psychedelic(img):
     """
-    Psychedelic-Filter für Collage-Zellen: Kanal-Rotation (R→G, G→B, B→R)
-    mit 3× Sättigungs-Verstärkung für extreme Farbverfälschung.
+    Apply a psychedelic filter to a collage cell image.
+
+    Rotates the colour channels (R→G, G→B, B→R) and then boosts saturation
+    by a factor of 3 for an extreme colour distortion effect.
     """
     r, g, b, *a = img.convert("RGBA").split()
     alpha = a[0] if a else PILImage.new("L", img.size, 255)
@@ -172,8 +189,10 @@ def _cf_psychedelic(img):
 
 def _cf_kaleidoscope(img):
     """
-    Kaleidoskop-Filter für Collage-Zellen:
-    Linke Hälfte spiegeln → obere Hälfte spiegeln → 4-fach-Symmetrie.
+    Apply a kaleidoscope filter to a collage cell image.
+
+    Mirrors the left half horizontally to fill the right side, then mirrors
+    the top half vertically to fill the bottom, producing 4-fold symmetry.
     """
     img = img.convert("RGBA")
     w, h = img.size
@@ -181,17 +200,17 @@ def _cf_kaleidoscope(img):
     left = img.crop((0, 0, hf_w, h))
     top  = PILImage.new("RGBA", (w, h))
     top.paste(left, (0, 0))
-    # Gespiegelte rechte Hälfte erzeugen
+    # Create the mirrored right half
     top.paste(ImageOps.mirror(left), (hf_w, 0))
     hf_h     = h // 2
     top_half = top.crop((0, 0, w, hf_h))
     result   = PILImage.new("RGBA", (w, h))
     result.paste(top_half, (0, 0))
-    # Gespiegelte untere Hälfte erzeugen
+    # Create the mirrored bottom half
     result.paste(ImageOps.flip(top_half), (0, hf_h))
     return result
 
-# Reihenfolge bestimmt die Einträge im Dropdown
+# The order of entries determines the order in the dropdown
 COLLAGE_FILTER_FNS = {
     "⬛ Schwarz/Weiß":  lambda i: ImageOps.grayscale(i.convert("RGB")).convert("RGBA"),
     "🌅 Sepia":          _cf_sepia,
@@ -213,38 +232,41 @@ COLLAGE_FILTER_FNS = {
 
 class GifEditorDialog(QDialog):
     """
-    Erstellt animierte GIFs mit vier Animations-Modi:
+    Create animated GIFs using one of four animation modes.
 
-    a) 📼 VHS-Distortion-Loop  – flimmernder Bildschirm aus den 80ern
-    b) ⭐ Sternschauer          – goldene Sterne fallen von einem Punkt
-    c) 🎬 Pfad-Animation        – Ebene bewegt sich entlang eines Pfades
-    d) 🌊 Parallax-GIF          – Ebenen schwingen mit Tiefen-Versatz (3D-Effekt)
+    a) 📼 VHS-Distortion-Loop  – flickering 80s-style screen distortion
+    b) ⭐ Sternschauer          – golden stars falling from a chosen origin point
+    c) 🎬 Pfad-Animation        – a layer travels along a user-defined path
+    d) 🌊 Parallax-GIF          – layers oscillate with depth-dependent offset (3-D effect)
 
     Workflow:
-      1. Modus wählen (RadioButton)
-      2. Parameter einstellen (SpinBoxen)
-      3. 'GIF generieren' → Frames werden berechnet und in Vorschau angezeigt
-      4. 'Als GIF exportieren' oder 'Als Video exportieren'
+      1. Choose a mode via the radio buttons.
+      2. Adjust parameters using the spin boxes.
+      3. Click 'GIF generieren' to compute frames and display the first one.
+      4. Export as GIF or as an MP4 video.
     """
 
-    _PW, _PH = 480, 320        # Vorschau-Größe in Pixeln
+    _PW, _PH = 480, 320        # Preview dimensions in pixels
     _GOLD    = (255, 210, 0, 255)
 
     def __init__(self, parent, editor):
         """
-        Erstellt den GIF-Editor-Dialog.
+        Initialise the GIF editor dialog.
 
-        Parameter:
-          parent – Eltern-Widget (ImageEditor-Hauptfenster)
-          editor – Referenz auf den ImageEditor (für Ebenen-Zugriff)
+        Parameters
+        ----------
+        parent : QWidget
+            Parent widget (the main ImageEditor window).
+        editor : ImageEditor
+            Reference to the active ImageEditor instance, used to access layers.
         """
         super().__init__(parent)
         self.editor       = editor
         self.frames: list = []
         self._star_origin: tuple | None = None
-        self._path_pts:    list         = []          # QPoint-Liste (Bildkoords)
-        self._base_pil                  = None        # Composite-Bild
-        self._sound_path:  str | None   = None        # Geladene Sound-Datei
+        self._path_pts:    list         = []          # QPoint list (image coordinates)
+        self._base_pil                  = None        # Composited base image
+        self._sound_path:  str | None   = None        # Currently loaded sound file path
 
         self.setWindowTitle("🎞  GIF-Editor")
         self.setModal(True)
@@ -253,18 +275,18 @@ class GifEditorDialog(QDialog):
         self._build_ui()
         self._refresh_base()
 
-    # ── UI-Aufbau ────────────────────────────────────────────
+    # ── UI construction ──────────────────────────────────────
 
     def _build_ui(self):
-        """Erstellt die gesamte UI des GIF-Editors: linke Steuerseite + rechte Vorschau."""
+        """Build the complete GIF editor UI: left control panel and right preview area."""
         root = QHBoxLayout(self)
         root.setSpacing(10)
 
-        # ── Linke Seite: Steuerung ────────────────────────────
+        # ── Left side: controls ──────────────────────────────
         ctrl_w = QWidget(); ctrl_w.setFixedWidth(310)
         ctrl   = QVBoxLayout(ctrl_w); ctrl.setSpacing(8)
 
-        # Modus-Auswahl
+        # Mode selection
         mode_box = QGroupBox("Animation-Typ")
         mode_box.setStyleSheet(
             "QGroupBox { color:#4fc3f7; border:1px solid #333; border-radius:4px; "
@@ -280,7 +302,7 @@ class GifEditorDialog(QDialog):
         for rb in (self._rb_vhs, self._rb_star, self._rb_path, self._rb_parallax): mb.addWidget(rb)
         ctrl.addWidget(mode_box)
 
-        # Parameter-Stack
+        # Parameter stack (one panel per mode)
         self._stack = QStackedWidget()
         self._stack.addWidget(self._panel_vhs())
         self._stack.addWidget(self._panel_star())
@@ -292,7 +314,7 @@ class GifEditorDialog(QDialog):
         self._rb_parallax.toggled.connect(lambda c: self._stack.setCurrentIndex(3) if c else None)
         ctrl.addWidget(self._stack)
 
-        # GIF-Einstellungen
+        # GIF settings
         gif_box = QGroupBox("GIF-Einstellungen")
         gif_box.setStyleSheet(mode_box.styleSheet())
         gb = QVBoxLayout(gif_box)
@@ -307,7 +329,7 @@ class GifEditorDialog(QDialog):
         gb.addLayout(r1); gb.addLayout(r2)
         ctrl.addWidget(gif_box)
 
-        # Aktions-Buttons
+        # Action buttons
         _btn = ("QPushButton { background:#2d2d2d; color:#ccc; border:1px solid #3a3a3a; "
                 "border-radius:4px; padding:8px; font-size:12px; } "
                 "QPushButton:hover { background:#3a3a3a; }")
@@ -323,7 +345,7 @@ class GifEditorDialog(QDialog):
         btn_vid.clicked.connect(self._export_video)
         ctrl.addWidget(btn_gen); ctrl.addWidget(btn_exp); ctrl.addWidget(btn_vid)
 
-        # ── Sound ──────────────────────────────────────────────
+        # ── Sound ────────────────────────────────────────────
         snd_box = QGroupBox("🎵  Sound (optional)")
         snd_box.setStyleSheet(
             "QGroupBox { color:#4fc3f7; border:1px solid #333; border-radius:4px; "
@@ -343,7 +365,7 @@ class GifEditorDialog(QDialog):
         ctrl.addWidget(snd_box)
         ctrl.addStretch()
 
-        # ── Rechte Seite: Vorschau ─────────────────────────────
+        # ── Right side: preview ──────────────────────────────
         prev_w = QWidget()
         pv = QVBoxLayout(prev_w); pv.setSpacing(6)
         pv.addWidget(QLabel("Vorschau  (Klick = Startpunkt/Pfadpunkt):"))
@@ -370,10 +392,17 @@ class GifEditorDialog(QDialog):
 
         root.addWidget(ctrl_w); root.addWidget(prev_w, 1)
 
-    # ── Parameter-Panels ─────────────────────────────────────
+    # ── Parameter panels ─────────────────────────────────────
 
     def _panel_vhs(self) -> QWidget:
-        """Erstellt das Parameter-Panel für den VHS-Distortion-Modus (Intensitäts-Spinner)."""
+        """
+        Build the parameter panel for VHS-Distortion mode.
+
+        Returns
+        -------
+        QWidget
+            Panel containing an intensity spinner (1–10).
+        """
         w = QWidget(); l = QVBoxLayout(w)
         info = QLabel("Bild wechselt zwischen Normal und Verzerrt.\n"
                       "Intensität steuert Stärke der Störungen.")
@@ -389,7 +418,15 @@ class GifEditorDialog(QDialog):
         return w
 
     def _panel_star(self) -> QWidget:
-        """Erstellt das Parameter-Panel für den Sternschauer-Modus (Anzahl, Größe, Startpunkt)."""
+        """
+        Build the parameter panel for Star-Shower mode.
+
+        Returns
+        -------
+        QWidget
+            Panel with spinners for star count range, size range, and an
+            origin-point label updated by clicking the preview.
+        """
         w = QWidget(); l = QVBoxLayout(w)
         info = QLabel("Goldene Sterne fallen vom gewählten Punkt.\n"
                       "Klick auf Vorschau = Startpunkt festlegen.\n"
@@ -419,7 +456,15 @@ class GifEditorDialog(QDialog):
         return w
 
     def _panel_path(self) -> QWidget:
-        """Erstellt das Parameter-Panel für den Pfad-Animations-Modus (Wegpunkte + Ebenenauswahl)."""
+        """
+        Build the parameter panel for Path-Animation mode.
+
+        Returns
+        -------
+        QWidget
+            Panel with a waypoint counter, a clear-path button, and a
+            combo box for selecting the layer to animate.
+        """
         w = QWidget(); l = QVBoxLayout(w)
         info = QLabel("Ebene bewegt sich entlang eines Pfades.\n"
                       "Klick auf Vorschau = Wegpunkte hinzufügen.\n"
@@ -446,7 +491,15 @@ class GifEditorDialog(QDialog):
         return w
 
     def _panel_parallax(self) -> QWidget:
-        """Erstellt das Parameter-Panel für den Parallax-Modus (Amplitude, Schwingungen, Richtung)."""
+        """
+        Build the parameter panel for Parallax-GIF mode.
+
+        Returns
+        -------
+        QWidget
+            Panel with spinners for maximum amplitude and number of oscillation
+            cycles, plus radio buttons to select horizontal or vertical motion.
+        """
         w = QWidget(); l = QVBoxLayout(w)
         info = QLabel("Jede Ebene schwingt mit unterschiedlicher\n"
                       "Amplitude – tiefere Ebenen bewegen sich\n"
@@ -475,15 +528,20 @@ class GifEditorDialog(QDialog):
         l.addStretch()
         return w
 
-    # ── Vorschau ─────────────────────────────────────────────
+    # ── Preview ──────────────────────────────────────────────
 
     def _refresh_base(self):
-        """Aktualisiert das zusammengesetzte Basis-Bild aus allen Ebenen des Editors."""
+        """Recomposite all editor layers into the cached base image and refresh the overlay."""
         self._base_pil = self.editor._composite_layers()
         self._draw_preview_overlay()
 
     def _draw_preview_overlay(self):
-        """Basis + Markierungen (Startpunkt, Pfad) in Vorschau zeichnen."""
+        """
+        Render the base image together with interactive markers into the preview label.
+
+        Draws a crosshair for the star origin point and connected dots for each
+        path waypoint, scaled to the preview dimensions.
+        """
         if not self._base_pil: return
         base  = self._base_pil
         thumb = base.copy(); thumb.thumbnail((self._PW, self._PH))
@@ -491,7 +549,7 @@ class GifEditorDialog(QDialog):
             self._PW, self._PH,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation)
-        # Offsets (KeepAspectRatio → Bild nicht zwingend ganz links/oben)
+        # Compute offsets: KeepAspectRatio may leave margins on one axis
         ox = (self._PW - pix.width())  // 2
         oy = (self._PH - pix.height()) // 2
         self._thumb_ox, self._thumb_oy  = ox, oy
@@ -547,15 +605,15 @@ class GifEditorDialog(QDialog):
         self._draw_preview_overlay()
 
     def _clear_path(self):
-        """Löscht alle gesetzten Pfadpunkte und aktualisiert die Vorschau."""
+        """Clear all path waypoints and refresh the preview overlay."""
         self._path_pts.clear()
         self._lbl_path.setText("Pfad: 0 Punkte")
         self._draw_preview_overlay()
 
-    # ── Frame-Vorschau ────────────────────────────────────────
+    # ── Frame preview ────────────────────────────────────────
 
     def _show_frame(self, idx: int):
-        """Zeigt den Frame mit Index idx (zyklisch) als Thumbnail in der Vorschau an."""
+        """Display frame at index idx (wrapping) as a thumbnail in the preview label."""
         if not self.frames: return
         idx = idx % len(self.frames)
         self._cur_fi = idx
@@ -571,7 +629,7 @@ class GifEditorDialog(QDialog):
     # ── Generator ─────────────────────────────────────────────
 
     def _generate(self):
-        """Generiert die GIF-Frames je nach gewähltem Modus und zeigt den ersten Frame in der Vorschau."""
+        """Generate GIF frames for the selected mode and display the first frame in the preview."""
         if self._rb_vhs.isChecked():
             self.frames = self._gen_vhs()
         elif self._rb_star.isChecked():
@@ -586,7 +644,7 @@ class GifEditorDialog(QDialog):
     # ── a) VHS-Distortion-Loop ────────────────────────────────
 
     def _gen_vhs(self) -> list:
-        """Generiert VHS-Distortion-Frames: gerade Frames zeigen das Original, ungerade verzerrt."""
+        """Generate VHS-distortion frames: even frames show the original, odd frames are distorted."""
         import random
         base   = self.editor._composite_layers().convert("RGB")
         n      = self._sp_frames.value()
@@ -600,10 +658,11 @@ class GifEditorDialog(QDialog):
     @staticmethod
     def _vhs_frame(img, rng, intensity: int):
         """
-        Erzeugt einen VHS-verzerrten Frame.
-        Gerade Zeilen werden abgedunkelt, dann werden zufällige horizontale
-        Bänder verschoben und aufgehellt, und abschließend werden die
-        Farbkanäle R und B leicht gegeneinander verschoben (Chroma-Shift).
+        Produce a single VHS-distorted frame.
+
+        Even scan-lines are darkened, random horizontal bands are shifted and
+        brightened, and finally the R and B channels are offset against each
+        other (chroma-shift), reproducing classic VHS tape artefacts.
         """
         img  = img.copy().convert("RGB")
         w, h = img.size
@@ -640,13 +699,14 @@ class GifEditorDialog(QDialog):
         b2.paste(b_c.crop((0,  0, w - sp, h)), (sp, 0))
         return PILImage.merge("RGB", (r2, g_c, b2))
 
-    # ── b) Sternschauer ───────────────────────────────────────
+    # ── b) Star shower ───────────────────────────────────────
 
     def _gen_stars(self) -> list:
         """
-        Generiert Sternschauer-Frames.
-        Goldene Sterne fallen vom Startpunkt nach unten, schwingen dabei
-        sinusförmig horizontal und sammeln sich am unteren Bildrand.
+        Generate star-shower frames.
+
+        Golden stars fall downward from the chosen origin point, oscillating
+        horizontally with a sinusoidal motion, and accumulate at the bottom edge.
         """
         import random, math
         # ── Validation ────────────────────────────────────────
@@ -672,9 +732,9 @@ class GifEditorDialog(QDialog):
         rng    = random.Random()
         n_st   = rng.randint(s_min, s_max)
         sizes  = [rng.randint(z_min, z_max) for _ in range(n_st)]
-        # Basis-Offset pro Stern (Startposition links/rechts vom Ursprung)
+        # Per-star base horizontal offset from the origin (left / right spread)
         base_offsets = [rng.randint(-w // 5, w // 5) for _ in range(n_st)]
-        # Amplitude und Frequenz der horizontalen Schwingung pro Stern
+        # Per-star amplitude and frequency of the horizontal oscillation
         amplitudes   = [rng.randint(w // 20, w // 8) for _ in range(n_st)]
         freqs        = [rng.uniform(0.4, 1.0)         for _ in range(n_st)]
         delays       = [rng.randint(0, max(1, n // 3)) for _ in range(n_st)]
@@ -688,13 +748,13 @@ class GifEditorDialog(QDialog):
                 prog = fi - delays[si]
                 if prog < 0: continue
                 cy_  = int(sy + prog * step)
-                # Horizontale Schwingung: Sinus × Amplitude
+                # Horizontal oscillation: sine × amplitude
                 cx_  = sx + base_offsets[si] + int(amplitudes[si] * math.sin(prog * freqs[si]))
                 sz   = sizes[si]
                 if cy_ + sz >= h:
                     cy_ = h - sz; done.add(si)
                 GifEditorDialog._star5(draw, cx_, cy_, sz)
-            # Akkumulierte Sterne am Boden (keine Schwingung mehr)
+            # Accumulated stars at the bottom edge (no longer oscillating)
             for si in done:
                 cx_final = sx + base_offsets[si]
                 GifEditorDialog._star5(draw, cx_final, h - sizes[si], sizes[si])
@@ -703,7 +763,7 @@ class GifEditorDialog(QDialog):
 
     @staticmethod
     def _star5(draw, cx, cy, r_outer):
-        """Zeichnet einen goldenen 5-Zack-Stern mit Mittelpunkt (cx, cy) und Außenradius r_outer."""
+        """Draw a golden 5-pointed star centred at (cx, cy) with outer radius r_outer."""
         import math
         r_inner = r_outer * 0.42
         pts = []
@@ -713,14 +773,15 @@ class GifEditorDialog(QDialog):
             pts.append((cx + r * math.cos(a), cy + r * math.sin(a)))
         draw.polygon(pts, fill=(255, 210, 0, 255), outline=(220, 160, 0, 255))
 
-    # ── c) Pfad-Animation ─────────────────────────────────────
+    # ── c) Path animation ─────────────────────────────────────
 
     def _gen_path(self) -> list:
         """
-        Generiert Pfad-Animations-Frames.
-        Die ausgewählte Ebene bewegt sich entlang eines Catmull-Rom-Splines,
-        der aus den gesetzten Wegpunkten berechnet wird.
-        Das Objekt rotiert dabei entsprechend der Tangentenrichtung des Pfades.
+        Generate path-animation frames.
+
+        The selected layer travels along a Catmull-Rom spline computed from
+        the waypoints set in the preview.  The object rotates to match the
+        tangent direction of the path at each frame.
         """
         import math
         if len(self._path_pts) < 2:
@@ -736,7 +797,7 @@ class GifEditorDialog(QDialog):
         if not obj_l.image: return []
         obj   = obj_l.image.convert("RGBA")
 
-        # Hintergrund: alle anderen sichtbaren Ebenen
+        # Background: composite of all visible layers except the animated one
         bg = PILImage.new("RGBA", lyrs[0].image.size if lyrs[0].image else (800, 600),
                           (40, 40, 40, 255))
         for i, lyr in enumerate(lyrs):
@@ -748,7 +809,7 @@ class GifEditorDialog(QDialog):
                 img = PILImage.merge("RGBA", (r, g, b, a))
             bg.paste(img, (lyr.x, lyr.y), img)
 
-        # Catmull-Rom Pfad interpolieren
+        # Interpolate the waypoints as a Catmull-Rom spline
         path = _catmull_rom_pts(self._path_pts,
                                 n_per_seg=max(1, n // max(1, len(self._path_pts) - 1)))
         total = len(path)
@@ -760,7 +821,7 @@ class GifEditorDialog(QDialog):
             pos   = path[pi]
             ix    = pos.x() - obj.width  // 2
             iy    = pos.y() - obj.height // 2
-            # Tangenten-Winkel → Rotation
+            # Compute the tangent angle for rotation
             angle = 0.0
             if pi + 1 < total:
                 nxt = path[pi + 1]
@@ -775,20 +836,23 @@ class GifEditorDialog(QDialog):
             frames.append(frame.convert("RGB"))
         return frames
 
-    # ── d) Parallax-GIF ───────────────────────────────────────
+    # ── d) Parallax GIF ───────────────────────────────────────
 
     def _gen_parallax(self) -> list:
         """
-        Parallax-GIF: Jede Ebene schwingt horizontal (oder vertikal) mit
-        einer Amplitude proportional zu ihrer Tiefe (Index in der Ebenen-Liste).
-        Hintere Ebenen (Index 0) bewegen sich kaum, vordere viel.
+        Generate parallax-GIF frames.
 
-        ALGORITHMUS:
-        1. n Frames, jeder Frame = vollständig neu kompositiert
-        2. Für Ebene i bei n Ebenen:
-           depth_factor = i / (n - 1)   → 0.0 (hinten) … 1.0 (vorne)
+        Each layer oscillates horizontally (or vertically) with an amplitude
+        proportional to its depth (stack index).  Background layers (index 0)
+        move very little; foreground layers move the most.
+
+        Algorithm
+        ---------
+        1. n frames, each fully recomposited from scratch.
+        2. For layer i of n_layers:
+           depth_factor = i / (n - 1)   → 0.0 (back) … 1.0 (front)
            offset = amplitude * depth_factor * sin(angle)
-        3. Alle Ebenen werden mit diesem versetzten x (oder y) gerendert.
+        3. All layers are rendered with this shifted x (or y) coordinate.
         """
         import math
         lyrs  = self.editor.layers
@@ -803,7 +867,7 @@ class GifEditorDialog(QDialog):
         swings     = self._sp_par_swing.value()
         horizontal = self._rb_par_h.isChecked()
 
-        # Bestimme Leinwandgröße
+        # Determine canvas size from the maximum layer extents
         base_w = max((l.x + l.image.width  for l in lyrs if l.image), default=800)
         base_h = max((l.y + l.image.height for l in lyrs if l.image), default=600)
 
@@ -833,10 +897,10 @@ class GifEditorDialog(QDialog):
 
     # ── Export ────────────────────────────────────────────────
 
-    # ── Sound laden ───────────────────────────────────────────
+    # ── Load sound ────────────────────────────────────────────
 
     def _load_sound(self):
-        """Sounddatei laden (WAV, MP3, OGG, FLAC)."""
+        """Open a file dialog and load an audio file (WAV, MP3, OGG, FLAC) for export."""
         path, _ = QFileDialog.getOpenFileName(
             self, "Sound wählen", "",
             "Audio (*.wav *.mp3 *.ogg *.flac *.aac *.m4a);;Alle (*)")
@@ -849,7 +913,7 @@ class GifEditorDialog(QDialog):
     # ── Export ────────────────────────────────────────────────
 
     def _export(self):
-        """Exportiert die generierten Frames als GIF-Datei, optional mit zugeschnittenem Sound."""
+        """Export the generated frames as a GIF file, optionally with a trimmed sound file."""
         if not self.frames:
             QMessageBox.warning(self, "Export",
                 "Bitte zuerst 'GIF generieren' klicken."); return
@@ -865,7 +929,7 @@ class GifEditorDialog(QDialog):
                       for f in self.frames[1:]]
             first.save(path, save_all=True, append_images=rest,
                        loop=0, duration=delay, optimize=False)
-            # ── Sound-Export ──────────────────────────────────
+            # ── Sound export ──────────────────────────────────
             sound_msg = ""
             if self._sound_path:
                 sound_out = self._export_sound(path, len(self.frames) * delay)
@@ -878,11 +942,11 @@ class GifEditorDialog(QDialog):
 
     def _export_video(self):
         """
-        Exportiert Frames + Sound als MP4-Video.
+        Export frames + optional sound as an MP4 video.
 
-        Verwendet imageio-ffmpeg (bereits als moviepy-Abhängigkeit installiert).
-        Wenn eine Sounddatei geladen ist, wird ffmpeg genutzt um Video + Audio
-        zusammenzufügen — kein moviepy-API-Aufruf nötig.
+        Uses imageio-ffmpeg (installed as a moviepy dependency).
+        When a sound file is loaded, ffmpeg is called via subprocess to mux
+        video and audio — no moviepy API call is needed.
         """
         if not self.frames:
             QMessageBox.warning(self, "Export",
@@ -898,7 +962,7 @@ class GifEditorDialog(QDialog):
         delay = self._sp_delay.value()
         fps   = int(round(1000.0 / max(1, delay)))
 
-        # libx264 erfordert gerade Breite & Höhe
+        # libx264 requires even width & height
         sample_w, sample_h = self.frames[0].size
         even_w = sample_w - (sample_w % 2)
         even_h = sample_h - (sample_h % 2)
@@ -914,7 +978,7 @@ class GifEditorDialog(QDialog):
             return
 
         ffmpeg_exe  = imageio_ffmpeg.get_ffmpeg_exe()
-        # Wenn Sound vorhanden: erst stummes Video, dann muxen
+        # If sound is loaded: write a silent video first, then mux in audio
         vid_tmp     = path + "._tmp.mp4" if self._sound_path else path
 
         try:
@@ -925,34 +989,34 @@ class GifEditorDialog(QDialog):
                 codec="libx264",
                 output_params=["-crf", "18", "-pix_fmt", "yuv420p"],
             )
-            writer.send(None)           # Generator starten
+            writer.send(None)           # prime the generator
             for f in self.frames:
                 writer.send(_even(f).tobytes())
             writer.close()
         except Exception as e:
             QMessageBox.critical(self, "Video-Fehler", str(e)); return
 
-        # ── Audio muxen via ffmpeg-Subprocess ────────────────
+        # ── Mux audio via ffmpeg subprocess ──────────────────
         if self._sound_path:
             vid_dur_s = len(self.frames) * delay / 1000.0
             try:
                 cmd = [
                     ffmpeg_exe, "-y",
                     "-i", vid_tmp,
-                    "-stream_loop", "-1",   # Audio endlos loopen
+                    "-stream_loop", "-1",   # loop audio indefinitely
                     "-i", self._sound_path,
                     "-map", "0:v:0",
                     "-map", "1:a:0",
                     "-c:v", "copy",
                     "-c:a", "aac",
-                    "-t", str(vid_dur_s),   # auf Video-Dauer begrenzen
+                    "-t", str(vid_dur_s),   # trim to video duration
                     path,
                 ]
                 result = subprocess.run(cmd, capture_output=True, text=True)
                 if result.returncode != 0:
                     raise RuntimeError(result.stderr[-600:])
             except Exception as e:
-                # Audio-Mux fehlgeschlagen → stummes Video behalten
+                # Audio mux failed → keep the silent video
                 try: os.replace(vid_tmp, path)
                 except: pass
                 QMessageBox.warning(self, "Audio-Warnung",
@@ -967,12 +1031,20 @@ class GifEditorDialog(QDialog):
 
     def _export_sound(self, gif_path: str, gif_ms: int) -> str | None:
         """
-        Schneidet die geladene Sounddatei auf die GIF-Dauer zu.
-        GIF und Sound sind danach gleich lang → loopen synchron.
+        Trim the loaded sound file to the GIF duration so they loop in sync.
 
-        Methode 1 (bevorzugt): pydub — unterstützt MP3/OGG/WAV/etc.
-        Methode 2 (Fallback):  eingebautes wave-Modul — nur WAV.
-        Methode 3 (Fallback):  Datei kopieren + Info anzeigen.
+        Method 1 (preferred): pydub — supports MP3/OGG/WAV/etc.
+        Method 2 (fallback):  built-in wave module — WAV only.
+        Method 3 (fallback):  copy file + display an info message.
+
+        Parameters
+        ----------
+        gif_path : Export path of the GIF (used to derive the sound output path).
+        gif_ms   : Target duration in milliseconds.
+
+        Returns
+        -------
+        Path to the exported sound file, or None if no sound was loaded.
         """
         import os, shutil
         if not self._sound_path:
@@ -980,11 +1052,11 @@ class GifEditorDialog(QDialog):
         ext      = os.path.splitext(self._sound_path)[1].lower()
         out_path = gif_path.replace(".gif", f"_sound{ext}")
 
-        # ── Methode 1: pydub ──────────────────────────────────
+        # ── Method 1: pydub ───────────────────────────────────
         try:
             from pydub import AudioSegment
             audio = AudioSegment.from_file(self._sound_path)
-            # Auf GIF-Dauer loopen falls zu kurz, dann auf gif_ms kürzen
+            # Loop the audio until it is long enough, then trim to gif_ms
             while len(audio) < gif_ms:
                 audio = audio + audio
             audio = audio[:gif_ms]
@@ -998,7 +1070,7 @@ class GifEditorDialog(QDialog):
             QMessageBox.warning(self, "Sound-Fehler",
                 f"pydub-Fehler: {e}\nVersuche WAV-Fallback…")
 
-        # ── Methode 2: wave (nur .wav) ────────────────────────
+        # ── Method 2: wave module (WAV only) ─────────────────
         if ext == ".wav":
             try:
                 import wave
@@ -1011,7 +1083,7 @@ class GifEditorDialog(QDialog):
                 target_frames = int(framerate * gif_ms / 1000)
                 bytes_per_frame = n_channels * sampwidth
                 target_bytes    = target_frames * bytes_per_frame
-                # Loopen bis Ziel-Länge erreicht
+                # Loop the raw bytes until the target length is reached
                 looped = data
                 while len(looped) < target_bytes:
                     looped += data
@@ -1023,7 +1095,7 @@ class GifEditorDialog(QDialog):
             except Exception as e:
                 QMessageBox.warning(self, "Sound-Fehler", f"WAV-Fehler: {e}")
 
-        # ── Methode 3: Datei kopieren + Hinweis ───────────────
+        # ── Method 3: copy file + show info message ───────────
         shutil.copy(self._sound_path, out_path)
         QMessageBox.information(self, "Sound-Hinweis",
             f"Sound wurde als '{out_path}' kopiert.\n\n"

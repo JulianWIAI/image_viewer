@@ -1,7 +1,11 @@
 """
-sbs/widgets.py
-Wiederverwendbare Widgets für den SBS Bildeditor:
-  HistogramWidget, LayerPanel, LabeledSlider, ImageCanvas.
+sbs/widgets.py – Reusable Qt widgets for the SBS Image Editor.
+
+Provides:
+  HistogramWidget  – RGB histogram display.
+  LayerPanel       – Interactive layer list with per-layer controls.
+  ImageCanvas      – Central image display widget and overlay host.
+  LabeledSlider    – Slider with a label and live value readout.
 """
 from __future__ import annotations
 from typing import TYPE_CHECKING
@@ -29,19 +33,20 @@ if TYPE_CHECKING:
 
 class HistogramWidget(QWidget):
     """
-    Zeigt die Rot/Grün/Blau-Verteilung des aktuellen Bildes als Balkendiagramm.
+    Displays the Red / Green / Blue distribution of the current image as a filled curve chart.
 
-    FUNKTIONSWEISE:
-    PIL's image.histogram() liefert 768 Werte: 256 je Kanal (R, G, B).
-    Aus Performancegründen wird das Bild vorher auf max. 256×256 px skaliert.
-    QPainter zeichnet für jeden der 256 Helligkeitswerte einen senkrechten Strich.
+    How it works
+    ------------
+    PIL's ``image.histogram()`` returns 768 values: 256 per channel (R, G, B).
+    For performance the image is first scaled to at most 256 × 256 px.
+    QPainter draws a filled QPainterPath for each of the 256 brightness levels.
 
-    Typisch für professionelle Editoren wie Lightroom oder Capture One.
-    Erklärt beim Prüfungsgespräch: Überbelichtung (Häufung rechts),
-    Unterbelichtung (Häufung links), Farbstiche (Kanal-Ungleichgewicht).
+    This is a standard feature of professional editors such as Lightroom or Capture One.
+    The histogram reveals overexposure (peak on the right), underexposure (peak on the
+    left), and colour casts (channel imbalance).
     """
     def __init__(self):
-        """Erstellt das Histogramm-Widget mit dunklem Hintergrund und fester Höhe."""
+        """Create the histogram widget with a dark background and a fixed height."""
         super().__init__()
         self._data = None   # tuple (r_list, g_list, b_list, max_val)
         self.setFixedHeight(90)
@@ -53,7 +58,13 @@ class HistogramWidget(QWidget):
             "Links = dunkle Pixel, Rechts = helle Pixel")
 
     def update_histogram(self, pil_image):
-        """Berechnet das Histogramm aus dem PIL-Bild und triggert Neuzeichnen."""
+        """
+        Compute the histogram from a PIL image and trigger a repaint.
+
+        Parameters
+        ----------
+        pil_image : PIL Image to analyse, or None to clear the display.
+        """
         if pil_image is None:
             self._data = None
             self.update()
@@ -61,7 +72,7 @@ class HistogramWidget(QWidget):
         try:
             thumb = pil_image.copy().convert("RGB")
             thumb.thumbnail((256, 256))
-            hist = thumb.histogram()   # 768 Werte: R×256 + G×256 + B×256
+            hist = thumb.histogram()   # 768 values: R×256 + G×256 + B×256
             r = hist[0:256]
             g = hist[256:512]
             b = hist[512:768]
@@ -73,11 +84,11 @@ class HistogramWidget(QWidget):
 
     def paintEvent(self, event):
         """
-        Zeichnet R/G/B als übereinanderliegende gefüllte Kurven (QPainterPath).
+        Paint R / G / B as overlapping filled curves (QPainterPath).
 
-        REIHENFOLGE: Blau zuerst (hinten), dann Grün, dann Rot (vorne).
-        Überlappende Bereiche zeigen die vorderste Farbe.
-        Gefüllte Flächen (fillPath) sind zuverlässiger sichtbar als dünne Linien.
+        Draw order: Blue first (back), then Green, then Red (front).
+        Overlapping areas show the frontmost colour.
+        Filled paths (fillPath) are more reliably visible than thin lines.
         """
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -93,9 +104,9 @@ class HistogramWidget(QWidget):
 
         r_data, g_data, b_data, max_val = self._data
         w, h = self.width(), self.height()
-        usable_h = h - 6   # kleiner Puffer unten
+        usable_h = h - 6   # small buffer at the bottom
 
-        # Blau → Grün → Rot (Rot liegt oben = am deutlichsten sichtbar)
+        # Blue → Green → Red (Red is drawn on top and is therefore most visible)
         for data, fill_color in [
             (b_data, QColor(50,  110, 240, 170)),
             (g_data, QColor(50,  200, 80,  170)),
@@ -112,7 +123,7 @@ class HistogramWidget(QWidget):
             painter.setPen(Qt.PenStyle.NoPen)
             painter.fillPath(path, QBrush(fill_color))
 
-        # Kanal-Labels oben links
+        # Channel labels (top-left corner)
         painter.setFont(QFont("Arial", 7, QFont.Weight.Bold))
         for txt, col, xp in [("R", QColor(255, 100, 100), 4),
                               ("G", QColor(80,  220, 80),  14),
@@ -123,28 +134,33 @@ class HistogramWidget(QWidget):
 
 
 # ══════════════════════════════════════════════════════════════
-#  EBENEN-PANEL: Liste aller Ebenen mit Steuerung
+#  LAYER PANEL: list of all layers with controls
 # ══════════════════════════════════════════════════════════════
 
 class LayerPanel(QWidget):
     """
-    Zeigt alle Ebenen des Editors als interaktive Liste.
+    Displays all editor layers as an interactive list.
 
-    Reihenfolge: Oberste Ebene (zuletzt hinzugefügt) oben in der Liste,
-    Hintergrund unten — wie in GIMP und Photoshop.
+    Layer order: the most recently added layer appears at the top of the
+    list; the background layer is at the bottom — matching GIMP and Photoshop.
 
-    Pro Ebene:
-      👁 Sichtbarkeit  |  Thumbnail  |  Name  |  Deckkraft %  |  🗑 Löschen
+    Per-layer controls
+    ------------------
+    👁 Visibility  |  Thumbnail  |  Name  |  Opacity %  |  🗑 Delete
 
-    Buttons oben:
-      + Neu  |  + Transparent (mit Größenwahl)  |  ⬇ Merge  |  Flatten
+    Top buttons
+    -----------
+    + New  |  + Transparent (with size dialog)  |  ⬇ Merge  |  Flatten
     """
 
     def __init__(self, editor):
         """
-        Erstellt das Ebenen-Panel.
-        Parameter:
-          editor – Referenz auf den ImageEditor (für Zugriff auf layers und active_layer_idx)
+        Create the layer panel.
+
+        Parameters
+        ----------
+        editor : Reference to the ImageEditor instance (for access to
+                 ``layers`` and ``active_layer_idx``).
         """
         super().__init__()
         self.editor = editor
@@ -152,12 +168,12 @@ class LayerPanel(QWidget):
         self._build_ui()
 
     def _build_ui(self):
-        """Erstellt die Button-Leiste und den scrollbaren Ebenen-Listen-Container."""
+        """Build the button bar and the scrollable layer-list container."""
         main = QVBoxLayout(self)
         main.setContentsMargins(4, 4, 4, 4)
         main.setSpacing(4)
 
-        # ── Button-Leiste
+        # ── Button bar
         btn_row = QHBoxLayout()
         btn_row.setSpacing(3)
         _bs = ("background:#2d2d2d; color:#ccc; border:1px solid #3a3a3a; "
@@ -175,7 +191,7 @@ class LayerPanel(QWidget):
             btn_row.addWidget(b)
         main.addLayout(btn_row)
 
-        # ── Ebenen-Liste (scrollbar)
+        # ── Layer list (scrollable)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setStyleSheet("background:#111; border:none;")
@@ -188,11 +204,11 @@ class LayerPanel(QWidget):
         scroll.setWidget(self._list_w)
         main.addWidget(scroll, 1)
 
-    # ── Öffentliche Methode: Liste neu aufbauen ──────────────
+    # ── Public method: rebuild the list ──────────────────────────
 
     def refresh(self):
-        """Alle Zeilen entfernen und neu aus editor.layers aufbauen."""
-        # Alle Widgets außer dem abschließenden Stretch löschen
+        """Remove all rows and rebuild them from editor.layers."""
+        # Delete all widgets except the trailing stretch item
         while self._list_layout.count() > 1:
             item = self._list_layout.takeAt(0)
             if item:
@@ -201,13 +217,25 @@ class LayerPanel(QWidget):
                     w.deleteLater()
 
         editor = self.editor
-        # Ebenen in umgekehrter Reihenfolge anzeigen (oben = zuletzt hinzugefügt)
+        # Display layers in reverse order so the topmost layer is at the top
         for i in reversed(range(len(editor.layers))):
             row = self._make_row(i, editor.layers[i], i == editor.active_layer_idx)
             self._list_layout.insertWidget(0, row)
 
     def _make_row(self, idx: int, layer, active: bool) -> QWidget:
-        """Erzeugt eine Ebenen-Zeile."""
+        """
+        Build a single layer row widget.
+
+        Parameters
+        ----------
+        idx    : Index of this layer in editor.layers.
+        layer  : The Layer object.
+        active : True if this is the currently active layer.
+
+        Returns
+        -------
+        A QWidget containing all per-layer controls.
+        """
         row = QWidget()
         row.setFixedHeight(46)
         active_style = ("background:#1a3a5a; border:1px solid #4fc3f7; border-radius:3px;")
@@ -218,7 +246,7 @@ class LayerPanel(QWidget):
         hl.setContentsMargins(4, 2, 4, 2)
         hl.setSpacing(4)
 
-        # Sichtbarkeit
+        # Visibility toggle
         vis = QPushButton("👁" if layer.visible else "🚫")
         vis.setFixedSize(26, 26)
         vis.setStyleSheet("background:#2a2a2a; border:1px solid #333; border-radius:3px;")
@@ -241,14 +269,14 @@ class LayerPanel(QWidget):
         thumb_lbl.mousePressEvent = lambda ev, i=idx: self._select_and_transform(i)
         hl.addWidget(thumb_lbl)
 
-        # Name
+        # Name label
         name_lbl = QLabel(layer.name)
         name_lbl.setStyleSheet("color:#ddd; font-size:10px;")
         name_lbl.setCursor(QCursor(Qt.CursorShape.PointingHandCursor))
         name_lbl.mousePressEvent = lambda ev, i=idx: self._select(i)
         hl.addWidget(name_lbl, 1)
 
-        # Deckkraft
+        # Opacity spinner
         spin = QSpinBox()
         spin.setRange(0, 100)
         spin.setValue(layer.opacity)
@@ -259,7 +287,7 @@ class LayerPanel(QWidget):
         spin.valueChanged.connect(lambda v, i=idx: self._set_opacity(i, v))
         hl.addWidget(spin)
 
-        # Löschen
+        # Delete button
         del_btn = QPushButton("🗑")
         del_btn.setFixedSize(24, 24)
         del_btn.setStyleSheet("background:#3a1a1a; border:1px solid #5a2a2a; border-radius:3px;")
@@ -267,17 +295,23 @@ class LayerPanel(QWidget):
         del_btn.clicked.connect(lambda _, i=idx: self._delete(i))
         hl.addWidget(del_btn)
 
-        # Rechtsklick-Kontextmenü auf der gesamten Zeile
+        # Right-click context menu on the entire row
         row.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         row.customContextMenuRequested.connect(
             lambda pos, i=idx: self._show_context_menu(i))
 
         return row
 
-    # ── Kontextmenü (Rechtsklick auf Ebene) ──────────────────
+    # ── Context menu (right-click on a layer row) ─────────────────
 
     def _show_context_menu(self, idx: int):
-        """Rechtsklick-Menü für eine Ebenen-Zeile."""
+        """
+        Show a context menu for the layer at the given index.
+
+        Parameters
+        ----------
+        idx : Index of the layer that was right-clicked.
+        """
         from PyQt6.QtWidgets import QMenu
         menu = QMenu(self)
         menu.setStyleSheet("""
@@ -300,7 +334,14 @@ class LayerPanel(QWidget):
         menu.exec(self.cursor().pos())
 
     def _load_image_into(self, idx: int):
-        """Bild in eine bestehende Ebene laden (ersetzt deren Inhalt)."""
+        """
+        Open a file dialog and load an image into an existing layer,
+        replacing its current content.
+
+        Parameters
+        ----------
+        idx : Index of the target layer.
+        """
         path, _ = QFileDialog.getOpenFileName(self, "Bild laden", "",
             "Bilder (*.png *.jpg *.jpeg *.bmp *.webp);;Alle (*)")
         if not path:
@@ -320,7 +361,13 @@ class LayerPanel(QWidget):
         self.refresh()
 
     def _rename(self, idx: int):
-        """Ebene umbenennen."""
+        """
+        Open an input dialog to rename a layer.
+
+        Parameters
+        ----------
+        idx : Index of the layer to rename.
+        """
         from PyQt6.QtWidgets import QInputDialog
         name, ok = QInputDialog.getText(
             self, "Umbenennen", "Neuer Name:",
@@ -330,7 +377,14 @@ class LayerPanel(QWidget):
             self.refresh()
 
     def _move_layer(self, idx: int, direction: int):
-        """Ebene in der Reihenfolge nach oben (+1) oder unten (-1) verschieben."""
+        """
+        Move a layer up (+1) or down (-1) in the stack.
+
+        Parameters
+        ----------
+        idx       : Index of the layer to move.
+        direction : +1 to move up, -1 to move down.
+        """
         ed    = self.editor
         new_i = idx + direction
         if new_i < 0 or new_i >= len(ed.layers):
@@ -341,10 +395,16 @@ class LayerPanel(QWidget):
         ed._update_display()
         self.refresh()
 
-    # ── Aktionen ─────────────────────────────────────────────
+    # ── Actions ──────────────────────────────────────────────────
 
     def _select_and_transform(self, idx: int):
-        """Thumbnail-Klick: Ebene aktivieren UND sofort Transform-Overlay starten."""
+        """
+        Thumbnail click: activate the layer AND immediately start the transform overlay.
+
+        Parameters
+        ----------
+        idx : Index of the layer to activate and transform.
+        """
         ed = self.editor
         ed.active_layer_idx = idx
         if ed.layers[idx].image:
@@ -354,7 +414,13 @@ class LayerPanel(QWidget):
         ed._start_layer_transform(idx)
 
     def _select(self, idx: int):
-        """Aktiviert eine Ebene und aktualisiert das Original-PIL für den Slider-Reset."""
+        """
+        Activate a layer and update the original PIL reference used for slider reset.
+
+        Parameters
+        ----------
+        idx : Index of the layer to activate.
+        """
         ed = self.editor
         ed.active_layer_idx = idx
         if ed.layers[idx].image:
@@ -363,23 +429,36 @@ class LayerPanel(QWidget):
         self.refresh()
 
     def _toggle_vis(self, idx: int):
-        """Schaltet die Sichtbarkeit der Ebene um und aktualisiert die Anzeige."""
+        """
+        Toggle the visibility of a layer and refresh the display.
+
+        Parameters
+        ----------
+        idx : Index of the layer whose visibility to toggle.
+        """
         self.editor.layers[idx].visible = not self.editor.layers[idx].visible
         self.editor._update_display()
         self.refresh()
 
     def _set_opacity(self, idx: int, value: int):
-        """Setzt die Deckkraft (0–100%) der Ebene und aktualisiert die Anzeige."""
+        """
+        Set the opacity (0–100 %) of a layer and refresh the display.
+
+        Parameters
+        ----------
+        idx   : Index of the target layer.
+        value : New opacity value (0 = transparent, 100 = fully opaque).
+        """
         self.editor.layers[idx].opacity = value
         self.editor._update_display()
 
     def _add_layer(self):
-        """Neue Ebene hinzufügen — mit optionalem Bild-Ladefilm."""
+        """Add a new layer — optionally loading an image from disk."""
         ed = self.editor
         if not ed.layers:
             return
 
-        # Dialog: Leere Ebene oder Bild laden?
+        # Dialog: empty layer or load an image?
         dlg = QDialog(self)
         dlg.setWindowTitle("Neue Ebene")
         dlg.setStyleSheet("background:#1a1a1a; color:#ddd;")
@@ -423,7 +502,7 @@ class LayerPanel(QWidget):
         self.refresh()
 
     def _add_transparent(self):
-        """Öffnet einen Dialog für benutzerdefinierte Breite/Höhe und fügt eine transparente Ebene hinzu."""
+        """Open a size dialog and add a fully transparent layer with custom dimensions."""
         ed = self.editor
         dlg = QDialog(self)
         dlg.setWindowTitle("Transparente Ebene")
@@ -455,7 +534,13 @@ class LayerPanel(QWidget):
         self.refresh()
 
     def _delete(self, idx: int):
-        """Löscht die Ebene mit dem angegebenen Index (mindestens eine Ebene bleibt erhalten)."""
+        """
+        Delete the layer at the given index.  At least one layer is always kept.
+
+        Parameters
+        ----------
+        idx : Index of the layer to delete.
+        """
         ed = self.editor
         if len(ed.layers) <= 1:
             QMessageBox.information(self, "Info",
@@ -469,7 +554,7 @@ class LayerPanel(QWidget):
         self.refresh()
 
     def _merge_down(self):
-        """Aktive Ebene mit der direkt darunter liegenden zusammenführen."""
+        """Merge the active layer down onto the layer directly below it."""
         ed  = self.editor
         idx = ed.active_layer_idx
         if idx == 0:
@@ -497,7 +582,7 @@ class LayerPanel(QWidget):
         self.refresh()
 
     def _flatten_all(self):
-        """Alle Ebenen zu einer einzigen zusammenführen."""
+        """Flatten all layers into a single background layer."""
         ed = self.editor
         ed._push()
         flat = ed._composite_layers()
@@ -509,38 +594,40 @@ class LayerPanel(QWidget):
         self.refresh()
 
     def _transform_active(self):
-        """Transform-Overlay für die aktive Ebene starten."""
+        """Start the transform overlay for the currently active layer."""
         self.editor._start_layer_transform(self.editor.active_layer_idx)
 
 
 # ══════════════════════════════════════════════════════════════
-#  FILTER-VORSCHAU-DIALOG: 5×4 Thumbnail-Grid aller Filter
+#  FILTER PREVIEW DIALOG: 5×4 thumbnail grid of all filters
 # ══════════════════════════════════════════════════════════════
 class ImageCanvas(QLabel):
     """
-    Bildfläche — zentrales Anzeige-Widget des Editors.
+    Central image display widget of the editor and host for all overlay widgets.
 
-    WARUM QLabel statt QWidget?
-    QLabel hat eine eingebaute setPixmap()-Methode, die ein QPixmap
-    effizient darstellt. Zoom wird durch Skalieren des QPixmap erreicht.
+    Why QLabel instead of QWidget?
+    QLabel has a built-in ``setPixmap()`` method that renders a QPixmap
+    efficiently.  Zoom is implemented by scaling the displayed QPixmap while
+    the underlying PIL image always stays at its original resolution.
 
-    ZOOM-IMPLEMENTIERUNG:
-    Zoom-Faktor (self._zoom) skaliert das angezeigte QPixmap.
-    Das PIL-Image bleibt immer in Originalgröße erhalten.
-    Beispiel: zoom=2.0 → Bild doppelt so groß angezeigt,
-              PIL-Image selbst unverändert.
+    Zoom implementation
+    -------------------
+    The zoom factor (``self._zoom``) scales the displayed QPixmap.
+    Example: zoom=2.0 → image displayed at double size;
+             the PIL image itself is unchanged.
 
-    OVERLAY-HOST:
-    Canvas ist Eltern-Widget aller Overlays (CropOverlay, DrawOverlay,
-    ShapePlacerOverlay). Overlays liegen flächendeckend darüber.
-    Immer nur ein Overlay gleichzeitig aktiv (self._overlay).
+    Overlay host
+    ------------
+    The canvas is the parent widget of all overlays (CropOverlay, DrawOverlay,
+    ShapePlacerOverlay).  Overlays cover the canvas completely.
+    Only one overlay can be active at a time (``self._overlay``).
     """
 
     def __init__(self):
         super().__init__()
-        self._pix_orig   = None    # QPixmap des aktuellen Bildes
+        self._pix_orig   = None    # QPixmap of the current image
         self._zoom       = 1.0
-        self._overlay: "QWidget | None" = None    # Aktives Overlay (Crop/Draw/Shape/MagicWand)
+        self._overlay: "QWidget | None" = None    # Active overlay (Crop/Draw/Shape/MagicWand)
 
         self.grabGesture(Qt.GestureType.PinchGesture)
         self.setText("Kein Bild geladen\n\nDatei → Öffnen  oder  Strg+O")
@@ -549,27 +636,45 @@ class ImageCanvas(QLabel):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
     def set_image(self, pix: QPixmap):
-        """Setzt ein neues Bild und setzt den Zoom auf 1:1 zurück."""
+        """
+        Set a new image and reset the zoom to 1:1.
+
+        Parameters
+        ----------
+        pix : QPixmap to display.
+        """
         self._pix_orig = pix
         self._zoom     = 1.0
         self._render()
 
     def update_image(self, pix: QPixmap):
-        """Aktualisiert das angezeigte Bild ohne den Zoom zurückzusetzen."""
+        """
+        Update the displayed image without resetting the current zoom level.
+
+        Parameters
+        ----------
+        pix : New QPixmap to display.
+        """
         self._pix_orig = pix
         self._render()
 
     def set_zoom(self, z: float):
-        """Setzt den Zoom-Faktor (Bereich 0.05–20.0) und rendert neu."""
+        """
+        Set the zoom factor (clamped to 0.05–20.0) and re-render.
+
+        Parameters
+        ----------
+        z : Desired zoom factor.
+        """
         self._zoom = max(0.05, min(z, 20.0))
         self._render()
 
     def get_zoom(self) -> float:
-        """Gibt den aktuellen Zoom-Faktor zurück."""
+        """Return the current zoom factor."""
         return self._zoom
 
     def _render(self):
-        """Skaliert das Original-Pixmap mit dem aktuellen Zoom-Faktor und zeigt es an."""
+        """Scale the original pixmap by the current zoom factor and display it."""
         if not self._pix_orig:
             return
         w = int(self._pix_orig.width()  * self._zoom)
@@ -580,12 +685,22 @@ class ImageCanvas(QLabel):
         self.setPixmap(scaled)
         self.resize(scaled.width(), scaled.height())
         self.setStyleSheet("")
-        # Overlay aktualisieren falls aktiv
+        # Resize the active overlay to match the canvas
         if self._overlay:
             self._overlay.setGeometry(self.rect())
 
     def start_crop_overlay(self, mode: str) -> "CropOverlay":
-        """Neues Crop-Overlay starten."""
+        """
+        Start a new crop overlay.
+
+        Parameters
+        ----------
+        mode : 'rect' for rectangle selection, 'lasso' for freehand polygon.
+
+        Returns
+        -------
+        The newly created CropOverlay.
+        """
         from .overlays import CropOverlay
         if self._overlay:
             self._overlay.close()
@@ -596,8 +711,18 @@ class ImageCanvas(QLabel):
     def start_draw_overlay(self, tool: str, color: QColor,
                            size: int, texture=None) -> "DrawOverlay":
         """
-        Neues Zeichen-Overlay starten.
-        Gibt das Overlay zurück damit der Editor Signale verbinden kann.
+        Start a new draw overlay.
+
+        Parameters
+        ----------
+        tool    : Drawing tool name ('pen', 'brush', 'eraser', etc.).
+        color   : Active drawing colour.
+        size    : Brush size in pixels.
+        texture : Optional PIL RGBA image used as a texture stamp.
+
+        Returns
+        -------
+        The newly created DrawOverlay so the editor can connect signals.
         """
         from .overlays import DrawOverlay
         if self._overlay:
@@ -609,8 +734,20 @@ class ImageCanvas(QLabel):
     def start_shape_placer(self, shape_key: str, size: int,
                            color: QColor) -> "ShapePlacerOverlay":
         """
-        Shape-Placer-Overlay starten.
-        Nutzer sieht eine Live-Vorschau und platziert die Form per Klick.
+        Start the shape-placer overlay.
+
+        The user sees a live preview of the shape under the cursor and places
+        it with a single click.
+
+        Parameters
+        ----------
+        shape_key : Key of the shape to place from SHAPE_LIBRARY.
+        size      : Desired shape size in image pixels.
+        color     : Drawing colour.
+
+        Returns
+        -------
+        The newly created ShapePlacerOverlay.
         """
         from .overlays import ShapePlacerOverlay
         if self._overlay:
@@ -620,11 +757,17 @@ class ImageCanvas(QLabel):
         return self._overlay
 
     def _on_overlay_done(self):
-        """Räumt die Overlay-Referenz auf wenn ein Overlay sich schließt."""
+        """Clear the overlay reference when an overlay closes itself."""
         self._overlay = None
 
     def event(self, event):
-        """Verarbeitet Pinch-Gesten für Touch-Zoom; delegiert alle anderen Events an Qt."""
+        """
+        Handle pinch gestures for touch-based zoom; delegate all other events to Qt.
+
+        Parameters
+        ----------
+        event : Qt event object.
+        """
         if event.type() == event.Type.Gesture:
             pinch = event.gesture(Qt.GestureType.PinchGesture)
             if pinch:
@@ -637,20 +780,22 @@ class ImageCanvas(QLabel):
 
 
 # ══════════════════════════════════════════════════════════════
-#  SLIDER-WIDGET
+#  SLIDER WIDGET
 # ══════════════════════════════════════════════════════════════
 
 class LabeledSlider(QWidget):
-    """Wiederverwendbarer Slider mit Label und Wertanzeige."""
+    """Reusable slider with a descriptive label and a live numeric value display."""
     value_changed = pyqtSignal(int)
 
     def __init__(self, label: str, mn: int, mx: int, default: int):
         """
-        Erstellt einen Slider mit Beschriftung und Wertanzeige.
-        Parameter:
-          label   – Beschriftungstext links
-          mn, mx  – Wertebereich
-          default – Startwert
+        Create a slider with a label and value display.
+
+        Parameters
+        ----------
+        label   : Label text displayed to the left of the slider.
+        mn, mx  : Minimum and maximum slider values.
+        default : Initial slider value.
         """
         super().__init__()
         layout = QVBoxLayout(self)
@@ -677,11 +822,17 @@ class LabeledSlider(QWidget):
         layout.addWidget(self.slider)
 
     def value(self):
-        """Gibt den aktuellen Slider-Wert zurück."""
+        """Return the current slider value."""
         return self.slider.value()
 
     def reset(self, val=100):
-        """Setzt den Slider auf val zurück ohne ein Signal auszulösen."""
+        """
+        Reset the slider to the given value without emitting a signal.
+
+        Parameters
+        ----------
+        val : Value to reset to (default 100).
+        """
         self.slider.blockSignals(True)
         self.slider.setValue(val)
         self.val_lbl.setText(str(val))
@@ -689,5 +840,5 @@ class LabeledSlider(QWidget):
 
 
 # ══════════════════════════════════════════════════════════════
-#  HAUPTFENSTER
+#  MAIN WINDOW
 # ══════════════════════════════════════════════════════════════

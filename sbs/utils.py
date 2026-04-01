@@ -1,6 +1,10 @@
 """
-sbs/utils.py
-Hilfsfunktionen und Form-Bibliothek (SHAPE_LIBRARY) für den SBS Bildeditor.
+sbs/utils.py – Utility functions and shape library (SHAPE_LIBRARY) for the SBS Image Editor.
+
+Provides:
+  • pil_to_qpixmap()   – converts a PIL image to a Qt QPixmap for display.
+  • SHAPE_LIBRARY      – dictionary of 8 vector shapes stored as normalised coordinates.
+  • draw_shape_on_pil() – renders a shape from SHAPE_LIBRARY onto a PIL image.
 """
 import math
 
@@ -14,14 +18,22 @@ except ImportError:
 
 def pil_to_qpixmap(img: "PILImage.Image") -> QPixmap:
     """
-    Konvertiert ein PIL-Image in ein QPixmap für die Qt-Anzeige.
+    Convert a PIL Image to a QPixmap for display in Qt widgets.
 
-    WARUM diese Funktion?
-    PyQt6 kann PIL-Images nicht direkt anzeigen.
-    PIL speichert Pixel als Python-Bytes, Qt braucht QImage/QPixmap.
-    Weg: PIL → rohe RGBA-Bytes → QImage → QPixmap
+    Why this function?
+    PyQt6 cannot display PIL images directly.  PIL stores pixels as raw
+    Python bytes while Qt requires QImage / QPixmap.
+    Conversion path: PIL → raw RGBA bytes → QImage → QPixmap.
 
-    RGBA = 4 Kanäle: Rot, Grün, Blau, Alpha (Transparenz)
+    RGBA = 4 channels: Red, Green, Blue, Alpha (transparency).
+
+    Parameters
+    ----------
+    img : PIL Image in any mode (will be converted to RGBA if necessary).
+
+    Returns
+    -------
+    QPixmap ready for use with QLabel.setPixmap() or similar.
     """
     if img.mode != "RGBA":
         img = img.convert("RGBA")
@@ -31,54 +43,64 @@ def pil_to_qpixmap(img: "PILImage.Image") -> QPixmap:
 
 
 # ══════════════════════════════════════════════════════════════
-#  FORM-BIBLIOTHEK: Text-to-Drawing Feature
+#  SHAPE LIBRARY: Text-to-Drawing feature
 #
-#  KONZEPT:
-#  Statt eines KI-Modells (z.B. Stable Diffusion, zu langsam für Schule)
-#  werden Formen als normalisierte Vektorkoordinaten gespeichert.
+#  CONCEPT:
+#  Instead of using an AI model (e.g. Stable Diffusion, too slow for
+#  a school project), shapes are stored as normalised vector coordinates.
 #
-#  NORMALISIERUNG:
-#  Alle Punkte liegen im Bereich 0.0–1.0 (unabhängig von Bildgröße).
-#  Beim Zeichnen werden sie mit dem gewünschten size-Parameter skaliert.
-#  Vorteil: Eine Form-Definition funktioniert für alle Größen (30px bis 400px).
+#  NORMALISATION:
+#  All points lie in the range 0.0–1.0, independent of image size.
+#  When drawing, they are scaled by the desired 'size' parameter.
+#  Advantage: one shape definition works for all sizes (30 px to 400 px).
 #
-#  VORTEIL gegenüber echtem Text-to-Image:
-#  ✓ Kein Modell-Download (mehrere GB)
-#  ✓ Sofortige Ausgabe (keine Wartezeit)
-#  ✓ Vollständig offline
-#  ✓ Deterministisch (immer gleiche Ausgabe)
-#  ✓ Erklärbar und nachvollziehbar
+#  ADVANTAGES over real text-to-image:
+#  ✓ No model download (several GB)
+#  ✓ Instant output (no waiting)
+#  ✓ Fully offline
+#  ✓ Deterministic (always the same output)
+#  ✓ Transparent and easy to understand
 # ══════════════════════════════════════════════════════════════
 
 def _scale_pts(pts, cx, cy, size):
     """
-    Hilfsfunktion: Normalisierte Punkte (0–1) auf echte Pixelkoordinaten
-    skalieren. cx/cy = Mittelpunkt, size = Breite/Höhe in Pixeln.
+    Scale normalised points (range 0–1) to real pixel coordinates.
+
+    Parameters
+    ----------
+    pts  : List of (x, y) tuples in the 0–1 normalised range.
+    cx   : X coordinate of the shape centre in pixels.
+    cy   : Y coordinate of the shape centre in pixels.
+    size : Width/height of the shape bounding box in pixels.
+
+    Returns
+    -------
+    List of (px, py) integer pixel coordinate tuples.
     """
     half = size / 2
     return [(int(cx + (x - 0.5) * size),
              int(cy + (y - 0.5) * size)) for x, y in pts]
 
 
-# Jede Form ist ein Dict mit:
-#   'label'  : Anzeigename im Dropdown
-#   'emoji'  : Emoji für Button
-#   'type'   : 'polygon', 'lines' oder 'compound'
-#   'parts'  : Liste von (type, points)-Tupeln für Compound-Formen
+# Each shape is a dict with:
+#   'label'  : Display name in the dropdown
+#   'emoji'  : Emoji for the button
+#   'type'   : 'polygon', 'lines', or 'compound'
+#   'parts'  : List of (type, points) tuples for compound shapes
 SHAPE_LIBRARY = {
 
     "🏠 Haus": {
         "label": "🏠 Haus",
         "parts": [
-            # Grundriss (Rechteck)
+            # Floor plan (rectangle)
             ("polygon", [(0.1, 0.5), (0.9, 0.5), (0.9, 0.95), (0.1, 0.95)]),
-            # Dach (Dreieck)
+            # Roof (triangle)
             ("polygon", [(0.0, 0.52), (0.5, 0.05), (1.0, 0.52)]),
-            # Tür
+            # Door
             ("polygon", [(0.38, 0.95), (0.62, 0.95), (0.62, 0.68), (0.38, 0.68)]),
-            # Fenster links
+            # Left window
             ("polygon", [(0.15, 0.6), (0.32, 0.6), (0.32, 0.75), (0.15, 0.75)]),
-            # Fenster rechts
+            # Right window
             ("polygon", [(0.68, 0.6), (0.85, 0.6), (0.85, 0.75), (0.68, 0.75)]),
         ]
     },
@@ -86,9 +108,9 @@ SHAPE_LIBRARY = {
     "☀️ Sonne": {
         "label": "☀️ Sonne",
         "parts": [
-            # Kreis (als 32-Eck approximiert)
-            ("circle", (0.5, 0.5, 0.28)),   # cx, cy, radius (normalisiert)
-            # 8 Strahlen
+            # Circle (approximated as a 32-gon)
+            ("circle", (0.5, 0.5, 0.28)),   # cx, cy, radius (normalised)
+            # 8 rays
             ("line", [(0.50, 0.08), (0.50, 0.18)]),
             ("line", [(0.50, 0.82), (0.50, 0.92)]),
             ("line", [(0.08, 0.50), (0.18, 0.50)]),
@@ -103,17 +125,17 @@ SHAPE_LIBRARY = {
     "⭐ Stern": {
         "label": "⭐ Stern",
         "parts": [
-            # 5-zackiger Stern (äußere und innere Punkte abwechselnd)
+            # 5-pointed star (alternating outer and inner vertices)
             ("polygon", [
-                (0.500, 0.050),  # oben
+                (0.500, 0.050),  # top
                 (0.594, 0.345),
-                (0.905, 0.345),  # rechts oben
+                (0.905, 0.345),  # upper right
                 (0.655, 0.527),
-                (0.755, 0.820),  # rechts unten
+                (0.755, 0.820),  # lower right
                 (0.500, 0.645),
-                (0.245, 0.820),  # links unten
+                (0.245, 0.820),  # lower left
                 (0.345, 0.527),
-                (0.095, 0.345),  # links oben
+                (0.095, 0.345),  # upper left
                 (0.406, 0.345),
             ]),
         ]
@@ -122,7 +144,7 @@ SHAPE_LIBRARY = {
     "❤️ Herz": {
         "label": "❤️ Herz",
         "parts": [
-            # Herz als Bézierkurve-Annäherung (36 Punkte)
+            # Heart shape as a Bézier-curve approximation (16 points)
             ("polygon", [
                 (0.500, 0.850),
                 (0.150, 0.520),
@@ -147,9 +169,9 @@ SHAPE_LIBRARY = {
     "🌸 Blume": {
         "label": "🌸 Blume",
         "parts": [
-            # Mittelkreis
+            # Centre circle
             ("circle", (0.5, 0.5, 0.12)),
-            # 6 Blütenblätter als Ellipsen (cx, cy, rx, ry, angle)
+            # 6 petals as ellipses (cx, cy, rx, ry, angle)
             ("petal", (0.50, 0.25, 0.10, 0.18, 0)),
             ("petal", (0.50, 0.75, 0.10, 0.18, 0)),
             ("petal", (0.25, 0.50, 0.18, 0.10, 0)),
@@ -158,31 +180,31 @@ SHAPE_LIBRARY = {
             ("petal", (0.71, 0.71, 0.10, 0.18, 45)),
             ("petal", (0.71, 0.29, 0.10, 0.18, -45)),
             ("petal", (0.29, 0.71, 0.10, 0.18, -45)),
-            # Stiel
+            # Stem
             ("line", [(0.50, 0.88), (0.50, 1.0)]),
-            ("line", [(0.50, 0.95), (0.35, 0.82)]),   # Blatt links
-            ("line", [(0.50, 0.92), (0.65, 0.79)]),   # Blatt rechts
+            ("line", [(0.50, 0.95), (0.35, 0.82)]),   # left leaf
+            ("line", [(0.50, 0.92), (0.65, 0.79)]),   # right leaf
         ]
     },
 
     "🚗 Auto": {
         "label": "🚗 Auto",
         "parts": [
-            # Karosserie unten (Rechteck)
+            # Lower body (rectangle)
             ("polygon", [(0.05, 0.55), (0.95, 0.55), (0.95, 0.80), (0.05, 0.80)]),
-            # Dach (abgerundetes Trapez)
+            # Roof (rounded trapezoid)
             ("polygon", [(0.20, 0.55), (0.80, 0.55), (0.70, 0.30), (0.30, 0.30)]),
-            # Windschutzscheibe
+            # Windscreen
             ("polygon", [(0.32, 0.53), (0.50, 0.53), (0.50, 0.33), (0.35, 0.33)]),
-            # Heckscheibe
+            # Rear window
             ("polygon", [(0.52, 0.53), (0.68, 0.53), (0.65, 0.33), (0.52, 0.33)]),
-            # Rad links (Kreis)
+            # Left wheel (circle)
             ("circle", (0.22, 0.82, 0.11)),
-            # Rad rechts
+            # Right wheel
             ("circle", (0.78, 0.82, 0.11)),
-            # Felge links
+            # Left rim
             ("circle", (0.22, 0.82, 0.05)),
-            # Felge rechts
+            # Right rim
             ("circle", (0.78, 0.82, 0.05)),
         ]
     },
@@ -190,13 +212,13 @@ SHAPE_LIBRARY = {
     "🌲 Baum": {
         "label": "🌲 Baum",
         "parts": [
-            # Stamm
+            # Trunk
             ("polygon", [(0.42, 0.75), (0.58, 0.75), (0.58, 0.95), (0.42, 0.95)]),
-            # Unteres Dreieck (groß)
+            # Lower triangle (large)
             ("polygon", [(0.10, 0.75), (0.90, 0.75), (0.50, 0.45)]),
-            # Mittleres Dreieck
+            # Middle triangle
             ("polygon", [(0.18, 0.52), (0.82, 0.52), (0.50, 0.25)]),
-            # Oberes Dreieck (klein)
+            # Upper triangle (small)
             ("polygon", [(0.26, 0.32), (0.74, 0.32), (0.50, 0.08)]),
         ]
     },
@@ -204,9 +226,9 @@ SHAPE_LIBRARY = {
     "➡️ Pfeil": {
         "label": "➡️ Pfeil",
         "parts": [
-            # Pfeilschaft
+            # Arrow shaft
             ("polygon", [(0.05, 0.38), (0.60, 0.38), (0.60, 0.62), (0.05, 0.62)]),
-            # Pfeilspitze
+            # Arrowhead
             ("polygon", [(0.60, 0.18), (0.95, 0.50), (0.60, 0.82)]),
         ]
     },
@@ -217,28 +239,33 @@ def draw_shape_on_pil(img: "PILImage.Image", shape_key: str,
                       cx: int, cy: int, size: int,
                       color: tuple, line_width: int = 2) -> "PILImage.Image":
     """
-    Zeichnet eine Form aus der SHAPE_LIBRARY auf ein PIL-Image.
+    Draw a shape from SHAPE_LIBRARY onto a PIL image.
 
-    Parameter:
-      img        – Ziel-PIL-Image (wird verändert zurückgegeben)
-      shape_key  – Schlüssel in SHAPE_LIBRARY (z.B. '🏠 Haus')
-      cx, cy     – Mittelpunkt der Form in Bildpixeln
-      size       – Breite/Höhe der Form in Pixeln
-      color      – RGBA-Tuple (r, g, b, a)
-      line_width – Strichbreite
+    Parameters
+    ----------
+    img        : Target PIL image (modified in place and returned).
+    shape_key  : Key in SHAPE_LIBRARY (e.g. '🏠 Haus').
+    cx, cy     : Centre of the shape in image pixels.
+    size       : Width/height of the shape bounding box in pixels.
+    color      : RGBA tuple (r, g, b, a).
+    line_width : Stroke width in pixels.
+
+    Returns
+    -------
+    The modified PIL image.
     """
     shape = SHAPE_LIBRARY.get(shape_key)
     if not shape:
         return img
 
     d = ImageDraw.Draw(img, "RGBA")
-    fill_color = (color[0], color[1], color[2], 80)   # Halbtr. Füllung
-    outline    = (color[0], color[1], color[2], 255)  # Voller Umriss
+    fill_color = (color[0], color[1], color[2], 80)   # Semi-transparent fill
+    outline    = (color[0], color[1], color[2], 255)  # Fully opaque outline
 
     for part_type, data in shape["parts"]:
 
         if part_type == "polygon":
-            # Normalisierte Punkte → Bildpixel
+            # Scale normalised points to image pixel coordinates
             pts = _scale_pts(data, cx, cy, size)
             d.polygon(pts, outline=outline, fill=fill_color)
 
@@ -269,5 +296,5 @@ def draw_shape_on_pil(img: "PILImage.Image", shape_key: str,
 
 
 # ══════════════════════════════════════════════════════════════
-#  KI-WORKER (Moondream via Ollama)
+#  AI WORKER (Moondream via Ollama)
 # ══════════════════════════════════════════════════════════════

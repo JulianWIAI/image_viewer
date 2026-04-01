@@ -1,7 +1,10 @@
 """
-sbs/widgets.py
-Wiederverwendbare Widgets für den SBS Bildeditor:
+sbs/widgets_v2.py – Legacy / backup copy of the widgets module (not imported).
+
+Reusable Qt widgets for the SBS Image Editor:
   HistogramWidget, LayerPanel, LabeledSlider, ImageCanvas.
+
+Note: This file is superseded by sbs/widgets.py and is kept for reference only.
 """
 
 from PyQt6.QtWidgets import (

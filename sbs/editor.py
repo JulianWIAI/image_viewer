@@ -1,6 +1,6 @@
 """
 sbs/editor.py
-Hauptfenster des SBS Bildeditors: ImageEditor (QMainWindow).
+Main window of the SBS Image Editor: ImageEditor (QMainWindow).
 """
 import sys, os, io, math
 
@@ -40,53 +40,53 @@ from .collage import CollageDialog
 
 class ImageEditor(QMainWindow):
     """
-    Hauptfenster des SBS Bildeditors.
+    Main window of the SBS Image Editor.
 
-    VERANTWORTLICHKEITEN:
-    • Verwaltet den Anwendungszustand (aktuelles Bild, Undo-Stack, Werkzeuge)
-    • Erstellt Menüleiste, Toolbar, Canvas, Dock-Panel, Statusleiste
-    • Verbindet alle Signale mit ihren Slots (Signal/Slot-Prinzip)
-    • Delegiert Bildoperationen an PIL (Pillow-Bibliothek)
-    • Delegiert KI-Analyse an AIWorker (separater Thread)
+    RESPONSIBILITIES:
+    • Manages application state (current image, undo stack, active tools)
+    • Creates the menu bar, toolbar, canvas, dock panels, and status bar
+    • Connects all signals to their slots (Signal/Slot pattern)
+    • Delegates image operations to PIL (Pillow library)
+    • Delegates AI analysis to AIWorker (separate thread)
 
-    ZUSTANDSVARIABLEN:
-      self.original_pil  – Unverändertes Original (für Reset & Slider-Basis)
-      self.current_pil   – Aktuell bearbeitetes Bild (wird gespeichert)
-      self.history       – Undo-Stack, max. 20 PIL-Image-Kopien
-      self.draw_tool     – Aktives Zeichen-Werkzeug ('pen', 'brush', ...)
-      self.draw_color    – Aktuelle Zeichenfarbe (QColor)
-      self.draw_size     – Pinselgröße in Pixeln
+    STATE VARIABLES:
+      self.original_pil  – Unmodified original (used for reset and slider baseline)
+      self.current_pil   – Currently edited composite image (what gets saved)
+      self.history       – Undo stack, max. 20 layer-state snapshots
+      self.draw_tool     – Active drawing tool ('pen', 'brush', ...)
+      self.draw_color    – Current drawing colour (QColor)
+      self.draw_size     – Brush size in pixels
 
-    UNDO-MECHANISMUS:
-    Vor jeder destruktiven Operation: self._push() → kopiert current_pil
-    in history. self.undo() → stellt letzte Kopie wieder her.
+    UNDO MECHANISM:
+    Before every destructive operation: self._push() copies the current layer
+    state into history. self.undo() restores the most recent snapshot.
     """
-    ZOOM_STEP = 0.15   # Zoom-Schrittgröße pro Klick (15%)
+    ZOOM_STEP = 0.15   # Zoom step size per click (15%)
 
     def __init__(self):
         """
-        Initialisiert den ImageEditor: setzt alle Zustandsvariablen auf Default-Werte
-        und ruft alle _setup_*-Methoden auf um die UI vollständig aufzubauen.
+        Initialises the ImageEditor: sets all state variables to their default
+        values and calls every _setup_* method to build the UI completely.
         """
         super().__init__()
         self.current_file       = None
-        self.original_pil       = None   # Original der aktiven Ebene (für Slider-Reset)
-        self.current_pil        = None   # Composite aller Ebenen (für Anzeige/Speichern)
-        self.history            = []     # Undo-Stack (max. 20, speichert Layer-Zustand)
+        self.original_pil       = None   # Original of the active layer (used for slider reset)
+        self.current_pil        = None   # Composite of all layers (used for display / saving)
+        self.history            = []     # Undo stack (max. 20, stores layer state snapshots)
         self.ai_worker          = None
 
-        # Ebenen-System
-        self.layers             = []     # Liste von Layer-Objekten
-        self.active_layer_idx   = 0      # Index der aktiven Ebene
+        # Layer system
+        self.layers             = []     # List of Layer objects
+        self.active_layer_idx   = 0      # Index of the currently active layer
 
-        # Auswahl (Zauberstab)
-        self.selection_mask     = None   # PIL "L"-Bild oder None
-        self.wand_tolerance     = 30     # Toleranz 0–100
+        # Selection (magic wand)
+        self.selection_mask     = None   # PIL "L" image or None
+        self.wand_tolerance     = 30     # Tolerance 0–100
 
-        # Textur-Pinsel
-        self.draw_texture       = None   # PIL RGBA Textur oder None
+        # Texture brush
+        self.draw_texture       = None   # PIL RGBA texture or None
 
-        # Zeichen-Zustand
+        # Drawing state
         self.draw_tool    = "pen"
         self.draw_color   = QColor(255, 0, 0)
         self.draw_size    = 4
@@ -100,19 +100,19 @@ class ImageEditor(QMainWindow):
         self._setup_statusbar()
         self.grabGesture(Qt.GestureType.PinchGesture)
 
-    # ── Fenster ─────────────────────────────────
+    # ── Window ──────────────────────────────────
     def _setup_window(self):
-        """Setzt Fenstertitel, Größe, Mindestgröße und Anwendungsicon."""
+        """Sets the window title, initial size, minimum size, and application icon."""
         self.setWindowTitle("SBS Bildeditor v3")
         self.resize(1400, 900)
         self.setMinimumSize(900, 600)
         _icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                  "app_icon.png")
+                                  "..", "assets", "app_icon.png")
         self.setWindowIcon(QIcon(_icon_path))
 
-    # ── Menüleiste ──────────────────────────────
+    # ── Menu bar ────────────────────────────────
     def _setup_menu(self):
-        """Erstellt die gesamte Menüleiste mit allen Menüs und Aktionen inkl. Shortcuts."""
+        """Builds the complete menu bar with all menus, actions, and keyboard shortcuts."""
         mb = self.menuBar()
         mb.setStyleSheet("background:#1a1a1a; color:#ddd; font-size:13px;")
 
@@ -168,7 +168,7 @@ class ImageEditor(QMainWindow):
 
     # ── Toolbar ─────────────────────────────────
     def _setup_toolbar(self):
-        """Erstellt die Toolbar mit häufig genutzten Aktionen (Öffnen, Speichern, Undo, Zoom, ...)."""
+        """Creates the toolbar with the most frequently used actions (open, save, undo, zoom, ...)."""
         tb = QToolBar(); tb.setMovable(False)
         tb.setStyleSheet("""
             QToolBar { background:#232323; border-bottom:1px solid #111; padding:3px 8px; spacing:3px; }
@@ -204,7 +204,7 @@ class ImageEditor(QMainWindow):
         add("🌅 Sepia",     "Sepia",              "",             self.apply_sepia)
         add("🔄 Reset",     "Zurücksetzen",       "Ctrl+R",       self.reset_to_original)
         tb.addSeparator()
-        # Zeichen-Werkzeuge
+        # Drawing tools
         add("✏️ Stift",     "Stift (Freihand)",   "Ctrl+Shift+P", lambda: self.set_draw_tool("pen"))
         add("🖌 Pinsel",    "Pinsel (weich)",     "Ctrl+Shift+B", lambda: self.set_draw_tool("brush"))
         add("⬜ Radierer",  "Radierer",           "Ctrl+Shift+E", lambda: self.set_draw_tool("eraser"))
@@ -228,9 +228,9 @@ class ImageEditor(QMainWindow):
         add("🎞 GIF",       "GIF-Editor",         "Ctrl+Shift+G", self.open_gif_editor)
         add("🧊 3D",        "3D-Modell (Beta)",   "Ctrl+Shift+3", self.open_3d_dialog)
 
-    # ── Canvas (Mitte) ───────────────────────────
+    # ── Canvas (centre) ─────────────────────────
     def _setup_central(self):
-        """Erstellt den zentralen ScrollArea-Container mit dem ImageCanvas."""
+        """Creates the central ScrollArea container that holds the ImageCanvas."""
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(False)
         self.scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -244,11 +244,11 @@ class ImageEditor(QMainWindow):
         self.scroll.setWidget(self.canvas)
         self.setCentralWidget(self.scroll)
 
-    # ── Einstellungspanel (rechts) ───────────────
+    # ── Settings panel (right) ──────────────────
     def _setup_panel(self):
         """
-        Rechtes Dock-Panel mit Korrekturen, Filtern und KI.
-        Scrollbar ermöglicht Platz für alle Bereiche.
+        Right dock panel containing adjustments, filters, and AI analysis.
+        A scroll area ensures all sections remain accessible regardless of window height.
         """
         dock = QDockWidget("Einstellungen", self)
         dock.setFeatures(QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
@@ -268,7 +268,7 @@ class ImageEditor(QMainWindow):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
 
-        # ── Crop-Werkzeuge
+        # ── Crop tools
         grp_crop = self._grp("✂  ZUSCHNEIDEN")
         cl = QVBoxLayout(grp_crop); cl.setSpacing(4)
         btn_s = """
@@ -285,11 +285,11 @@ class ImageEditor(QMainWindow):
         cl.addWidget(b_rect); cl.addWidget(b_lasso); cl.addWidget(hint)
         layout.addWidget(grp_crop)
 
-        # ── Zeichen-Werkzeuge
+        # ── Drawing tools
         grp_draw = self._grp("✏️  ZEICHNEN")
         dl = QVBoxLayout(grp_draw); dl.setSpacing(5)
 
-        # Werkzeug-Auswahl (2×4 Grid)
+        # Tool selection (2×4 grid)
         draw_tools = [
             ("✏️ Stift",    "pen"),          ("🖌 Pinsel",       "brush"),
             ("💧 Unschärfe","blur"),         ("⬜ Radierer",     "eraser"),
@@ -298,7 +298,7 @@ class ImageEditor(QMainWindow):
             ("〜 Kurve",   "curve"),        ("🖼 Textur-Pinsel","texture_brush"),
             ("🎨 Farbe…",  "__color__"),    ("",               "__noop__"),
         ]
-        # Stil für aktiven/inaktiven Button
+        # Style for active/inactive buttons
         self._draw_btns = {}
         grid_rows = [draw_tools[i:i+2] for i in range(0, len(draw_tools), 2)]
         for row_items in grid_rows:
@@ -324,7 +324,7 @@ class ImageEditor(QMainWindow):
                 row.addWidget(btn)
             dl.addLayout(row)
 
-        # Farbvorschau
+        # Colour preview
         color_row = QHBoxLayout()
         color_lbl = QLabel("Farbe:")
         color_lbl.setStyleSheet("color:#bbb; font-size:11px;")
@@ -337,12 +337,12 @@ class ImageEditor(QMainWindow):
         color_row.addStretch()
         dl.addLayout(color_row)
 
-        # Pinselgröße
+        # Brush size
         self.sl_brush_size = LabeledSlider("Pinselgröße", 1, 50, self.draw_size)
 
         def on_size_change(v):
             self.draw_size = v
-            # Overlay sofort mit neuer Größe neu starten
+            # Restart overlay immediately with the new brush size
             if self.btn_draw_start.isChecked() and self.current_pil:
                 if self.canvas._overlay:
                     self.canvas._overlay.blockSignals(True)
@@ -353,7 +353,7 @@ class ImageEditor(QMainWindow):
         self.sl_brush_size.value_changed.connect(on_size_change)
         dl.addWidget(self.sl_brush_size)
 
-        # Zeichnen starten/stoppen Button
+        # Start / stop drawing button
         self.btn_draw_start = QPushButton("▶  Zeichnen aktivieren")
         self.btn_draw_start.setCheckable(True)
         self.btn_draw_start.setStyleSheet("""
@@ -369,7 +369,7 @@ class ImageEditor(QMainWindow):
         hint_draw.setStyleSheet("color:#555; font-size:10px;")
         dl.addWidget(hint_draw)
 
-        # Textur laden Button
+        # Load texture button
         _btn_style2 = ("background:#2d2d2d; color:#ccc; border:1px solid #3a3a3a; "
                        "border-radius:4px; padding:6px; font-size:11px;")
         btn_tex = QPushButton("🖼  Textur laden…")
@@ -380,7 +380,7 @@ class ImageEditor(QMainWindow):
 
         layout.addWidget(grp_draw)
 
-        # ── Zauberstab-Werkzeug
+        # ── Magic wand tool
         grp_wand = self._grp("🪄  ZAUBERSTAB")
         wl = QVBoxLayout(grp_wand); wl.setSpacing(5)
 
@@ -389,7 +389,7 @@ class ImageEditor(QMainWindow):
                                 "border-radius:3px; padding:5px;")
         wl.addWidget(wand_info)
 
-        # Toleranz-Slider
+        # Tolerance slider
         self.sl_wand_tol = LabeledSlider("Toleranz", 0, 100, self.wand_tolerance)
         def _on_wand_tol(v):
             self.wand_tolerance = v
@@ -405,7 +405,7 @@ class ImageEditor(QMainWindow):
         btn_wand.clicked.connect(self.start_magic_wand)
         wl.addWidget(btn_wand)
 
-        # Auswahl-Aktionen
+        # Selection actions
         sel_row = QHBoxLayout()
         btn_clr_sel = QPushButton("✕ Aufheben")
         btn_clr_sel.setStyleSheet(_btn_style2)
@@ -421,7 +421,7 @@ class ImageEditor(QMainWindow):
 
         layout.addWidget(grp_wand)
 
-        # ── Text-to-Drawing (Formen-Bibliothek)
+        # ── Text-to-Drawing (shape library)
         grp_shapes = self._grp("✨  TEXT-TO-DRAWING")
         sl_layout  = QVBoxLayout(grp_shapes); sl_layout.setSpacing(6)
 
@@ -431,7 +431,7 @@ class ImageEditor(QMainWindow):
             "border-radius:3px; padding:5px;")
         sl_layout.addWidget(info_lbl)
 
-        # Shape-Dropdown
+        # Shape dropdown
         self.shape_combo = QComboBox()
         self.shape_combo.setStyleSheet("""
             QComboBox { background:#2d2d2d; color:#ddd; border:1px solid #3a3a3a;
@@ -444,11 +444,11 @@ class ImageEditor(QMainWindow):
             self.shape_combo.addItem(key)
         sl_layout.addWidget(self.shape_combo)
 
-        # Formgröße-Slider
+        # Shape size slider
         self.sl_shape_size = LabeledSlider("Formgröße (px)", 30, 400, 120)
         sl_layout.addWidget(self.sl_shape_size)
 
-        # Platzieren-Button
+        # Place button
         btn_place = QPushButton("✨  Form auf Bild platzieren")
         btn_place.setStyleSheet("""
             QPushButton { background:#1a3050; color:#7ec8f7; border:1px solid #2a5080;
@@ -459,7 +459,7 @@ class ImageEditor(QMainWindow):
         btn_place.clicked.connect(self.start_shape_placer)
         sl_layout.addWidget(btn_place)
 
-        # Vorschau-Grid der 8 Formen als kleine Buttons
+        # Quick-pick preview grid (small buttons for each shape)
         preview_lbl = QLabel("Schnellwahl:")
         preview_lbl.setStyleSheet("color:#666; font-size:10px;")
         sl_layout.addWidget(preview_lbl)
@@ -486,7 +486,7 @@ class ImageEditor(QMainWindow):
 
         layout.addWidget(grp_shapes)
 
-        # ── Grundkorrekturen
+        # ── Basic adjustments
         grp_basic = self._grp("◎  GRUNDKORREKTUREN")
         gl = QVBoxLayout(grp_basic); gl.setSpacing(5)
         self.sl_brightness = LabeledSlider("Helligkeit",  0, 200, 100)
@@ -564,7 +564,7 @@ class ImageEditor(QMainWindow):
         for name, fn in filters:
             self.filter_combo.addItem(name)
             if fn is None:
-                # Trennzeilen-Einträge deaktivieren
+                # Disable separator entries so they are not selectable
                 idx = self.filter_combo.count() - 1
                 self.filter_combo.model().item(idx).setEnabled(False)
                 self.filter_combo.model().item(idx).setForeground(QColor("#4fc3f7"))
@@ -629,11 +629,11 @@ class ImageEditor(QMainWindow):
         btn_reset.clicked.connect(self.reset_to_original)
         layout.addWidget(btn_reset)
 
-        # ── KI-Analyse Panel (großzügig)
+        # ── AI analysis panel
         grp_ai = self._grp("🤖  KI-ANALYSE  (Moondream – Beta)")
         al = QVBoxLayout(grp_ai); al.setSpacing(6)
 
-        # Großes Textfeld für die Antwort
+        # Large text area for the AI response
         self.ai_text = QTextEdit()
         self.ai_text.setReadOnly(True)
         self.ai_text.setMinimumHeight(150)
@@ -676,7 +676,7 @@ class ImageEditor(QMainWindow):
 
     # ── Statusleiste ────────────────────────────
     def _setup_statusbar(self):
-        """Erstellt die Statusleiste am unteren Fensterrand mit einem Begrüßungstext."""
+        """Create the status bar at the bottom of the window with a welcome message."""
         self.status_bar = QStatusBar()
         self.status_bar.setStyleSheet(
             "background:#111; color:#666; font-size:11px; border-top:1px solid #2a2a2a;")
@@ -687,8 +687,8 @@ class ImageEditor(QMainWindow):
     # ── Ebenen-Dock (links) ──────────────────────
     def _setup_layers_dock(self):
         """
-        Zweites Dock-Widget auf der linken Seite: zeigt das Ebenen-Panel.
-        Trennung vom rechten Einstellungs-Panel hält die UI übersichtlich.
+        Second dock widget on the left side: hosts the layer panel.
+        Keeping it separate from the right settings panel keeps the UI uncluttered.
         """
         dock = QDockWidget("📐  Ebenen", self)
         dock.setFeatures(QDockWidget.DockWidgetFeature.NoDockWidgetFeatures)
@@ -706,12 +706,12 @@ class ImageEditor(QMainWindow):
     # ── Composite & Display ──────────────────────
     def _composite_layers(self) -> "PILImage.Image":
         """
-        Fasst alle sichtbaren Ebenen zu einem einzigen RGBA-Bild zusammen.
+        Flatten all visible layers into a single RGBA image.
 
-        Reihenfolge: layers[0] = Hintergrund (zuerst gemalt),
-                     layers[-1] = oberste Ebene (zuletzt gemalt).
-        Opacity wird auf den Alpha-Kanal jeder Ebene angewendet
-        bevor sie auf das Ergebnis-Canvas gepastet wird.
+        Order: layers[0] = background (painted first),
+               layers[-1] = top layer (painted last).
+        Opacity is applied to each layer's alpha channel before
+        it is pasted onto the result canvas.
         """
         if not self.layers:
             return PILImage.new("RGBA", (800, 600), (40, 40, 40, 255))
@@ -734,11 +734,11 @@ class ImageEditor(QMainWindow):
 
     def _update_display(self):
         """
-        Recompiliert das Composite aller Ebenen und aktualisiert:
-          • Canvas-Anzeige
-          • Histogramm
-          • Ebenen-Panel Thumbnails
-        Wird nach jeder Ebenen-Änderung aufgerufen.
+        Recomposite all layers and refresh:
+          • canvas display
+          • histogram
+          • layer panel thumbnails
+        Called after every layer change.
         """
         self.current_pil = self._composite_layers()
         self.canvas.update_image(pil_to_qpixmap(self.current_pil))
@@ -752,7 +752,7 @@ class ImageEditor(QMainWindow):
     # ══════════════════════════════════════════════
 
     def open_file(self):
-        """Bild öffnen und als PIL-Image in den Editor laden."""
+        """Open an image file and load it into the editor as a PIL Image."""
         if not PIL_AVAILABLE:
             QMessageBox.warning(self, "Fehler", "pip install Pillow"); return
         path, _ = QFileDialog.getOpenFileName(self, "Bild öffnen", "",
@@ -778,21 +778,21 @@ class ImageEditor(QMainWindow):
             QMessageBox.critical(self, "Fehler", str(e))
 
     def save_file(self):
-        """Speichert das Bild unter dem aktuellen Dateipfad (oder öffnet 'Speichern unter')."""
+        """Save the image to the current file path, or open Save-As if no path is set."""
         if self.current_pil and self.current_file:
             self._save_to(self.current_file)
         else:
             self.save_file_as()
 
     def save_file_as(self):
-        """Öffnet einen Speicherdialog und speichert das Bild unter einem neuen Pfad."""
+        """Open a save dialog and write the image to a new file path."""
         if not self.current_pil: return
         path, _ = QFileDialog.getSaveFileName(self, "Speichern unter", "",
             "PNG (*.png);;JPEG (*.jpg);;BMP (*.bmp)")
         if path: self._save_to(path)
 
     def _save_to(self, path: str):
-        """Speichert das aktuelle Composite-Bild unter path (JPEG-Konvertierung bei .jpg)."""
+        """Write the current composite image to *path* (converts to RGB for JPEG)."""
         try:
             img = self.current_pil.copy()
             if path.lower().endswith((".jpg", ".jpeg")):
@@ -808,13 +808,13 @@ class ImageEditor(QMainWindow):
 
     def _push(self):
         """
-        Aktuellen Ebenen-Zustand in den Undo-Stack schieben.
+        Push the current layer state onto the undo stack.
 
-        UNDO-MECHANISMUS:
-        Jede destruktive Operation ruft zuerst _push() auf.
-        Gespeichert wird ein Snapshot aller Layer (Bildkopie + Metadaten).
-        Speicherverbrauch: ~4 Bytes × Breite × Höhe × Anzahl Ebenen pro Schritt.
-        Maximum 20 Schritte.
+        UNDO MECHANISM:
+        Every destructive operation calls _push() first.
+        A snapshot of all layers (image copy + metadata) is stored.
+        Memory cost: ~4 bytes × width × height × number of layers per step.
+        Maximum of 20 steps.
         """
         if not self.layers:
             return
@@ -836,7 +836,7 @@ class ImageEditor(QMainWindow):
             self.history.pop(0)
 
     def undo(self):
-        """Stellt den letzten Undo-Snapshot wieder her (Ebenen-Zustand + Original-PIL)."""
+        """Restore the last undo snapshot (layer state + original PIL image)."""
         if not self.history:
             self.status_bar.showMessage("Nichts zum Rückgängigmachen.", 2000); return
         state = self.history.pop()
@@ -857,7 +857,7 @@ class ImageEditor(QMainWindow):
         self._update_status()
 
     def reset_to_original(self):
-        """Aktive Ebene auf ihren letzten bestätigten Zustand (vor Schieberegler-Änderungen) zurücksetzen."""
+        """Reset the active layer to its last committed state (before any slider adjustments)."""
         if not self.original_pil or not self.layers:
             return
         self._push()
@@ -867,7 +867,7 @@ class ImageEditor(QMainWindow):
         self.status_bar.showMessage("🔄 Original wiederhergestellt", 2000)
 
     def _reset_sliders(self):
-        """Setzt alle Korrektur-Schieberegler auf den Standardwert 100 zurück."""
+        """Reset all correction sliders to their neutral default value of 100."""
         for sl in [self.sl_brightness, self.sl_contrast,
                    self.sl_saturation, self.sl_sharpness]:
             sl.reset(100)
@@ -878,8 +878,8 @@ class ImageEditor(QMainWindow):
 
     def start_rect_crop(self):
         """
-        Rechteck-Zuschnitt: Overlay starten, Nutzer zieht Rechteck.
-        Das Overlay wird über dem Canvas angezeigt.
+        Rectangle crop: launch the overlay so the user can drag a crop region.
+        The overlay is displayed on top of the canvas.
         """
         if not self.current_pil:
             self.status_bar.showMessage("⚠ Zuerst ein Bild öffnen.", 2000); return
@@ -891,8 +891,8 @@ class ImageEditor(QMainWindow):
 
     def start_lasso_crop(self):
         """
-        Lasso-Zuschnitt: Overlay starten, Nutzer zeichnet freie Form.
-        Der Bereich außerhalb wird transparent/weiß.
+        Lasso crop: launch the overlay so the user can draw a freehand shape.
+        The area outside the polygon becomes transparent.
         """
         if not self.current_pil:
             self.status_bar.showMessage("⚠ Zuerst ein Bild öffnen.", 2000); return
@@ -903,7 +903,7 @@ class ImageEditor(QMainWindow):
         overlay.cancelled.connect(lambda: self.status_bar.showMessage("Abgebrochen.", 2000))
 
     def _on_rect_selected(self, rect: QRect):
-        """Nach dem Zeichnen des Rechtecks: MovableRectOverlay für Anpassung zeigen."""
+        """After the rectangle is drawn: show a MovableRectOverlay for fine-tuning."""
         mov = MovableRectOverlay(self.canvas, rect)
         mov.confirmed.connect(self._do_rect_crop)
         mov.cancelled.connect(lambda: self.status_bar.showMessage("Abgebrochen.", 2000))
@@ -913,7 +913,7 @@ class ImageEditor(QMainWindow):
             "Auswahl anpassen: Ziehen=Verschieben  |  Ecken=Skalieren  |  Enter=Zuschneiden  |  ESC=Abbruch")
 
     def _on_lasso_selected(self, points: list):
-        """Nach dem Zeichnen des Lassos: MovableLassoOverlay für Anpassung zeigen."""
+        """After the lasso is drawn: show a MovableLassoOverlay for repositioning."""
         mov = MovableLassoOverlay(self.canvas, points)
         mov.confirmed.connect(self._do_lasso_crop)
         mov.cancelled.connect(lambda: self.status_bar.showMessage("Abgebrochen.", 2000))
@@ -924,27 +924,27 @@ class ImageEditor(QMainWindow):
 
     def _do_rect_crop(self, rect: QRect):
         """
-        Rechteck-Koordinaten vom Overlay in Bildkoordinaten umrechnen
-        und PIL-Image zuschneiden.
+        Convert rectangle coordinates from overlay (screen) space to image space
+        and crop the PIL image.
 
-        KOORDINATEN-UMRECHNUNG (Zoom-Korrektur):
-        Das Overlay arbeitet in Bildschirmpixeln (beeinflusst durch Zoom).
-        PIL.Image.crop() braucht echte Bildpixel.
-        Formel: Bildpixel = Bildschirmpixel / zoom_faktor
-        Beispiel: zoom=2.0, Klick bei x=400 → Bildpixel x=200
+        COORDINATE CONVERSION (zoom correction):
+        The overlay works in screen pixels which are scaled by the zoom factor.
+        PIL.Image.crop() requires actual image pixels.
+        Formula: image_px = screen_px / zoom_factor
+        Example: zoom=2.0, click at x=400 → image pixel x=200
         """
         if not self.layers: return
         layer = self.layers[self.active_layer_idx]
         if not layer.image: return
 
-        # Zoom-Faktor berücksichtigen (Overlay-Koordinaten → Bildkoordinaten)
+        # Divide overlay coordinates by the zoom factor to get image coordinates
         z = self.canvas.get_zoom()
         x1 = int(rect.left()   / z)
         y1 = int(rect.top()    / z)
         x2 = int(rect.right()  / z)
         y2 = int(rect.bottom() / z)
 
-        # Auf Bildgrenzen begrenzen
+        # Clamp to image bounds
         w, h = layer.image.width, layer.image.height
         x1, y1 = max(0, x1), max(0, y1)
         x2, y2 = min(w, x2), min(h, y2)
@@ -952,17 +952,17 @@ class ImageEditor(QMainWindow):
         if x2 > x1 and y2 > y1:
             self._push()
             rgba = layer.image.convert("RGBA")
-            # ── Ausschnitt auf neue Ebene ──────────────────────
+            # ── Copy cropped region to a new layer ────────────
             cut_img = rgba.crop((x1, y1, x2, y2))
             new_layer   = Layer(cut_img, "Ausschnitt")
             new_layer.x = layer.x + x1
             new_layer.y = layer.y + y1
-            # ── Loch ins Original stanzen ──────────────────────
+            # ── Punch a transparent hole in the original ───────
             orig_mod = rgba.copy()
             hole = PILImage.new("RGBA", (x2 - x1, y2 - y1), (0, 0, 0, 0))
             orig_mod.paste(hole, (x1, y1))
             layer.image = orig_mod
-            # ── Layer-Stack aktualisieren ──────────────────────
+            # ── Update the layer stack ─────────────────────────
             self.layers.append(new_layer)
             self.active_layer_idx = len(self.layers) - 1
             self.original_pil     = cut_img.copy()
@@ -974,16 +974,16 @@ class ImageEditor(QMainWindow):
 
     def _do_lasso_crop(self, points: list):
         """
-        Lasso-Zuschnitt: Freihand-Polygon als Maske anwenden.
+        Lasso crop: apply a freehand polygon as a mask.
 
-        MASKEN-KONZEPT (wichtig für die Prüfung!):
-        1. Schwarze Maske (L-Mode) in Originalgröße erstellen
-        2. Polygon mit Weiß füllen → weiß = sichtbar, schwarz = transparent
-        3. PIL.Image.paste() mit Maske: kopiert nur die weißen Bereiche
-        4. crop() auf Bounding Box des Polygons → fertiges Ergebnis
+        MASKING CONCEPT:
+        1. Create a black mask (mode "L") at full image size.
+        2. Fill the polygon with white → white = visible, black = transparent.
+        3. PIL.Image.paste() with the mask copies only the white (selected) region.
+        4. crop() to the polygon bounding box → final result.
 
-        Ergebnis ist ein RGBA-Bild mit transparentem Hintergrund.
-        Kann als PNG mit Transparenz gespeichert werden.
+        The result is an RGBA image with a transparent background,
+        suitable for saving as PNG with transparency.
         """
         if not self.layers or len(points) < 3: return
         layer = self.layers[self.active_layer_idx]
@@ -992,10 +992,10 @@ class ImageEditor(QMainWindow):
         z = self.canvas.get_zoom()
         w, h = layer.image.width, layer.image.height
 
-        # Overlay-Punkte → Bildpixel
+        # Convert overlay points to image pixels
         img_pts = [(int(p.x() / z), int(p.y() / z)) for p in points]
 
-        # Begrenzungsrahmen des Polygons berechnen
+        # Compute the bounding box of the polygon
         xs = [p[0] for p in img_pts]
         ys = [p[1] for p in img_pts]
         x1, y1 = max(0, min(xs)), max(0, min(ys))
@@ -1005,27 +1005,27 @@ class ImageEditor(QMainWindow):
 
         self._push()
 
-        # Maske erstellen: Polygon füllen
+        # Build the mask: fill the polygon with white
         mask = PILImage.new("L", (w, h), 0)
         draw = ImageDraw.Draw(mask)
         draw.polygon(img_pts, fill=255)
 
-        # Bild mit Maske kombinieren (außen transparent)
+        # Composite image with mask (area outside polygon → transparent)
         rgba = layer.image.copy().convert("RGBA")
         result = PILImage.new("RGBA", (w, h), (0, 0, 0, 0))
         result.paste(rgba, mask=mask)
 
-        # ── Ausschnitt (Polygon) auf neue Ebene ───────────────
+        # ── Copy the polygon region to a new layer ────────────
         cut_img = result.crop((x1, y1, x2, y2))
         new_layer   = Layer(cut_img, "Lasso-Ausschnitt")
         new_layer.x = layer.x + x1
         new_layer.y = layer.y + y1
-        # ── Loch ins Original stanzen (inverse Maske) ─────────
+        # ── Punch a transparent hole in the original (inverse mask) ──
         inv_mask  = mask.point([255 - v for v in range(256)])
         orig_mod  = PILImage.new("RGBA", (w, h), (0, 0, 0, 0))
         orig_mod.paste(rgba, mask=inv_mask)
         layer.image = orig_mod
-        # ── Layer-Stack aktualisieren ──────────────────────────
+        # ── Update the layer stack ─────────────────────────────
         self.layers.append(new_layer)
         self.active_layer_idx = len(self.layers) - 1
         self.original_pil     = cut_img.copy()
@@ -1041,16 +1041,16 @@ class ImageEditor(QMainWindow):
 
     def _apply_adjustments(self):
         """
-        Wendet Helligkeit/Kontrast/Sättigung/Schärfe live auf das Bild an.
+        Apply brightness/contrast/saturation/sharpness adjustments live.
 
-        WICHTIG – immer vom Original starten:
-        Würde man von current_pil starten, würden sich Werte aufaddieren.
-        Beispiel: Slider 2× auf 150 gesetzt → Helligkeit wäre 150% × 150% = 225%.
-        Lösung: Immer self.original_pil als Basis nehmen, dann alle
-        Schieberegler in einem Durchlauf anwenden.
+        IMPORTANT — always start from the original:
+        If current_pil were used as the base, adjustments would compound on each
+        slider move. Example: slider set to 150 twice → brightness 150% × 150% = 225%.
+        Solution: always use self.original_pil as the base and apply all sliders
+        in a single pass.
 
-        ImageEnhance-Werte: 1.0 = keine Änderung, <1 = weniger, >1 = mehr.
-        Slider-Wert 100 → 100/100 = 1.0 (neutraler Wert)
+        ImageEnhance values: 1.0 = no change, <1 = less, >1 = more.
+        Slider value 100 → 100/100 = 1.0 (neutral)
         """
         if not self.original_pil or not self.layers: return
         img = self.original_pil.copy().convert("RGB")
@@ -1066,20 +1066,20 @@ class ImageEditor(QMainWindow):
     # ══════════════════════════════════════════════
 
     def rotate_cw(self):
-        """Dreht die aktive Ebene 90° im Uhrzeigersinn."""
+        """Rotate the active layer 90° clockwise."""
         self._transform(lambda i: i.rotate(-90, expand=True))
     def rotate_ccw(self):
-        """Dreht die aktive Ebene 90° gegen den Uhrzeigersinn."""
+        """Rotate the active layer 90° counter-clockwise."""
         self._transform(lambda i: i.rotate( 90, expand=True))
     def flip_horizontal(self):
-        """Spiegelt die aktive Ebene horizontal."""
+        """Flip the active layer horizontally."""
         self._transform(lambda i: ImageOps.mirror(i))
     def flip_vertical(self):
-        """Spiegelt die aktive Ebene vertikal."""
+        """Flip the active layer vertically."""
         self._transform(lambda i: ImageOps.flip(i))
 
     def _transform(self, fn):
-        """Wendet eine Transformationsfunktion auf die aktive Ebene an (mit Undo-Schritt)."""
+        """Apply a transformation function to the active layer (with an undo step)."""
         if not self.layers: return
         layer = self.layers[self.active_layer_idx]
         if not layer.image: return
@@ -1095,7 +1095,7 @@ class ImageEditor(QMainWindow):
     # ══════════════════════════════════════════════
 
     def _apply_selected_filter(self):
-        """Wählt den aktiven Filter aus dem Dropdown und wendet ihn an."""
+        """Read the active filter from the dropdown and apply it."""
         name = self.filter_combo.currentText()
         fn   = self._filter_map.get(name)
         if fn:
@@ -1104,7 +1104,7 @@ class ImageEditor(QMainWindow):
             self.status_bar.showMessage("Bitte einen Filter auswählen.", 2000)
 
     def _filt(self, fn):
-        """Hilfsmethode: Filter auf aktive Ebene anwenden mit Undo-Schritt."""
+        """Helper: apply a filter function to the active layer with an undo step."""
         if not self.layers: return
         layer = self.layers[self.active_layer_idx]
         if not layer.image: return
@@ -1115,13 +1115,13 @@ class ImageEditor(QMainWindow):
         self._update_display()
         self._update_status()
 
-    # ── Farbfilter
+    # ── Colour filters
     def apply_grayscale(self):
-        """Wandelt das Bild in Graustufen um."""
+        """Convert the image to greyscale."""
         self._filt(lambda i: ImageOps.grayscale(i).convert("RGBA"))
 
     def apply_sepia(self):
-        """Wendet einen Sepia-Vintage-Filter (rotbraune Tönung) an."""
+        """Apply a sepia vintage filter (reddish-brown tint)."""
         def sepia(img):
             g = ImageOps.grayscale(img)
             r = g.point(lambda x: min(255, int(x * 1.1)))
@@ -1131,7 +1131,7 @@ class ImageEditor(QMainWindow):
         self._filt(sepia)
 
     def apply_cool(self):
-        """Kühler Blauton – simuliert Kältefilter."""
+        """Cool blue tone — simulates a cooling filter."""
         def cool(img):
             r, g, b, *a = img.convert("RGBA").split()
             r = r.point(lambda x: max(0, x - 20))
@@ -1140,7 +1140,7 @@ class ImageEditor(QMainWindow):
         self._filt(cool)
 
     def apply_warm(self):
-        """Warmer Orangeton – simuliert Wärmefilter."""
+        """Warm orange tone — simulates a warming filter."""
         def warm(img):
             r, g, b, *a = img.convert("RGBA").split()
             r = r.point(lambda x: min(255, x + 30))
@@ -1149,7 +1149,7 @@ class ImageEditor(QMainWindow):
         self._filt(warm)
 
     def apply_purple(self):
-        """Lila/Violett-Stich."""
+        """Purple/violet colour cast."""
         def purple(img):
             r, g, b, *a = img.convert("RGBA").split()
             r = r.point(lambda x: min(255, x + 20))
@@ -1159,7 +1159,7 @@ class ImageEditor(QMainWindow):
         self._filt(purple)
 
     def apply_green(self):
-        """Grünstich-Filter."""
+        """Green colour cast filter."""
         def green(img):
             r, g, b, *a = img.convert("RGBA").split()
             g = g.point(lambda x: min(255, x + 30))
@@ -1168,16 +1168,16 @@ class ImageEditor(QMainWindow):
         self._filt(green)
 
     def apply_invert(self):
-        """Invertiert alle Farbkanäle (Negativ-Effekt)."""
+        """Invert all colour channels (negative effect)."""
         self._filt(lambda i: ImageOps.invert(i.convert("RGB")).convert("RGBA"))
 
-    # ── Schärfe/Weiche
+    # ── Sharpness / Blur
     def apply_sharpen(self):
-        """Schärft das Bild einmalig mit PIL SHARPEN-Filter."""
+        """Sharpen the image once with PIL's SHARPEN filter."""
         self._filt(lambda i: i.filter(ImageFilter.SHARPEN))
 
     def apply_sharpen_strong(self):
-        """Dreifaches Schärfen für deutlichen Effekt."""
+        """Apply the sharpen filter three times for a pronounced effect."""
         def sharpen3(img):
             for _ in range(3):
                 img = img.filter(ImageFilter.SHARPEN)
@@ -1185,28 +1185,28 @@ class ImageEditor(QMainWindow):
         self._filt(sharpen3)
 
     def apply_blur(self):
-        """Weichzeichner mit Gauss-Radius 2 (leichter Unschärfe-Effekt)."""
+        """Gaussian blur with radius 2 (subtle softening effect)."""
         self._filt(lambda i: i.filter(ImageFilter.GaussianBlur(radius=2)))
 
     def apply_blur_strong(self):
-        """Starker Weichzeichner mit Gauss-Radius 6."""
+        """Strong Gaussian blur with radius 6."""
         self._filt(lambda i: i.filter(ImageFilter.GaussianBlur(radius=6)))
 
-    # ── Effekte
+    # ── Effects
     def apply_emboss(self):
-        """Emboss (Relief)-Filter: erzeugt einen geprägten 3D-Effekt."""
+        """Emboss filter: produces a raised, 3D relief effect."""
         self._filt(lambda i: i.filter(ImageFilter.EMBOSS))
 
     def apply_edges(self):
-        """Kanten-Betonung: hebt Konturkanten stark hervor."""
+        """Edge enhancement: strongly emphasises contour edges."""
         self._filt(lambda i: i.filter(ImageFilter.EDGE_ENHANCE_MORE))
 
     def apply_autocontrast(self):
-        """Auto-Kontrast: streckt das Histogramm auf den vollen 0–255 Bereich."""
+        """Auto-contrast: stretches the histogram to cover the full 0–255 range."""
         self._filt(lambda i: ImageOps.autocontrast(i.convert("RGB")))
 
     def apply_noise(self):
-        """Zufälliges Rauschen hinzufügen (analoger Look)."""
+        """Add random noise to the image (analogue film look)."""
         import random
         def noise(img):
             img = img.convert("RGB")
@@ -1223,35 +1223,35 @@ class ImageEditor(QMainWindow):
             return img
         self._filt(noise)
 
-    # ── Kreativ-Filter
+    # ── Creative filters
     def apply_comic(self):
         """
-        Comic/Cartoon-Filter:
-        Kanten betonen + Posterize (Farbstufen reduzieren) + Sättigung erhöhen.
-        Ergibt einen gezeichneten, comicartigen Look.
+        Comic/cartoon filter:
+        edge enhancement + posterise (reduce colour levels) + boost saturation.
+        Produces a drawn, comic-book look.
         """
         def comic(img):
             rgb = img.convert("RGB")
-            # Kanten extrahieren
+            # Extract edges
             edges = rgb.filter(ImageFilter.EDGE_ENHANCE_MORE)
-            # Posterize: auf 4 Farbstufen reduzieren
+            # Posterise: reduce to 4 colour levels
             poster = ImageOps.posterize(rgb, 4)
-            # Sättigung erhöhen
+            # Boost saturation
             poster = ImageEnhance.Color(poster).enhance(2.5)
-            # Schärfen
+            # Sharpen
             poster = ImageEnhance.Sharpness(poster).enhance(3.0)
             return poster
         self._filt(comic)
 
     def apply_dog_vision(self):
         """
-        Hunde-Sicht (Dichromacy):
-        Hunde sehen kein Rot – nur Blau und Gelb.
-        Rot-Kanal wird durch Grün ersetzt.
+        Dog vision (dichromacy):
+        Dogs cannot see red — only blue and yellow.
+        The red channel is replaced by green to simulate this.
         """
         def dog(img):
             r, g, b, *a = img.convert("RGBA").split()
-            # Rot durch Gelb/Grün ersetzen (Dichromacy-Simulation)
+            # Replace red with yellow/green (dichromacy simulation)
             new_r = g   # kein echtes Rot
             new_g = g
             new_b = b.point(lambda x: min(255, int(x * 1.3)))
@@ -1261,20 +1261,20 @@ class ImageEditor(QMainWindow):
 
     def apply_psychedelic(self):
         """
-        Psychedelic-Filter: Extreme Farbverschiebung durch
-        Kanal-Rotation (R→G, G→B, B→R) + hohe Sättigung.
+        Psychedelic filter: extreme colour shift via
+        channel rotation (R→G, G→B, B→R) + high saturation.
         """
         def psycho(img):
             r, g, b, *a = img.convert("RGBA").split()
-            # Kanäle rotieren für Farbverfälschung
+            # Rotate channels to create colour distortion
             result = PILImage.merge("RGBA", (g, b, r, a[0]) if a else (g, b, r))
             return ImageEnhance.Color(result).enhance(3.0)
         self._filt(psycho)
 
     def apply_night(self):
         """
-        Nacht-Modus: Blaustich + Abdunkeln + leichtes Rauschen.
-        Simuliert Nachtaufnahmen oder Nachtsichtgeräte.
+        Night mode: blue cast + darkening + slight noise.
+        Simulates night photography or night-vision devices.
         """
         def night(img):
             img = img.convert("RGB")
@@ -1287,16 +1287,16 @@ class ImageEditor(QMainWindow):
 
     def apply_vignette(self):
         """
-        Foto-Vignette: Rand des Bildes dunkel, Mitte hell.
-        Klassischer Retro-Fotoeffekt.
+        Photo vignette: dark edges, bright centre.
+        A classic retro photo effect.
         """
         def vignette(img):
             img = img.convert("RGBA")
             w, h = img.width, img.height
-            # Schwarze Vignette-Maske erstellen
+            # Create a black vignette mask
             mask = PILImage.new("L", (w, h), 255)
             draw = ImageDraw.Draw(mask)
-            # Gradient von Mitte nach außen
+            # Gradient from centre outward
             cx, cy = w // 2, h // 2
             for i in range(min(w, h) // 2, 0, -1):
                 alpha = int(255 * (1 - (i / (min(w, h) // 2)) ** 0.5))
@@ -1308,7 +1308,7 @@ class ImageEditor(QMainWindow):
         self._filt(vignette)
 
     def apply_film_grain(self):
-        """Film-Korn: Feines Rauschen + leichte Sättigungsreduktion."""
+        """Film grain: fine noise + slight saturation reduction."""
         import random
         def grain(img):
             img = img.convert("RGB")
@@ -1323,8 +1323,8 @@ class ImageEditor(QMainWindow):
 
     def apply_watercolor(self):
         """
-        Aquarell-Effekt: Weichzeichnen + Kanten betonen + Sättigung hoch.
-        Ergibt einen gemalten, weichen Look.
+        Watercolour effect: blur + edge enhancement + high saturation.
+        Produces a painted, soft look.
         """
         def watercolor(img):
             img = img.convert("RGB")
@@ -1336,7 +1336,7 @@ class ImageEditor(QMainWindow):
         self._filt(watercolor)
 
     def apply_high_contrast(self):
-        """Hochkontrast-Swatch: Extremes Posterize + Kontrasterhöhung."""
+        """High-contrast swatch: extreme posterise + contrast boost."""
         def hc(img):
             img = ImageOps.posterize(img.convert("RGB"), 2)
             return ImageEnhance.Contrast(img).enhance(3.0)
@@ -1344,26 +1344,26 @@ class ImageEditor(QMainWindow):
 
     def apply_kaleidoscope(self):
         """
-        Kaleidoskop-Filter: Bild in 4 gespiegelte Segmente teilen.
+        Kaleidoscope filter: split the image into 4 mirrored segments.
 
-        ALGORITHMUS:
-        1. Linke Bildhälfte nehmen
-        2. Horizontal spiegeln → rechte Hälfte (Symmetrie links↔rechts)
-        3. Obere Hälfte des Ergebnisses nehmen
-        4. Vertikal spiegeln → untere Hälfte (Symmetrie oben↔unten)
-        Ergebnis: 4-fach symmetrisches Kaleidoskop-Muster.
+        ALGORITHM:
+        1. Take the left half of the image.
+        2. Mirror it horizontally → right half (left↔right symmetry).
+        3. Take the top half of the result.
+        4. Flip it vertically → bottom half (top↔bottom symmetry).
+        Result: a 4-fold symmetric kaleidoscope pattern.
         """
         def kaleidoscope(img):
             img = img.convert("RGBA")
             w, h = img.size
             half_w = w // 2
-            # Schritt 1+2: Linke Hälfte + gespiegelte rechte Hälfte
+            # Steps 1+2: left half + mirrored right half
             left   = img.crop((0, 0, half_w, h))
             right  = ImageOps.mirror(left)
             top    = PILImage.new("RGBA", (w, h))
             top.paste(left,  (0,      0))
             top.paste(right, (half_w, 0))
-            # Schritt 3+4: Obere Hälfte + gespiegelte untere Hälfte
+            # Steps 3+4: top half + flipped bottom half
             half_h   = h // 2
             top_half = top.crop((0, 0, w, half_h))
             bottom   = ImageOps.flip(top_half)
@@ -1375,15 +1375,15 @@ class ImageEditor(QMainWindow):
 
     def apply_vhs_flicker(self):
         """
-        VHS-Flicker-Filter: Simuliert einen flimmernden Bildschirm aus den 80ern.
+        VHS flicker filter: simulates a flickering 1980s CRT screen.
 
-        ALGORITHMUS:
-        1. Horizontale Scan-Linien: jede 2. Zeile leicht abdunkeln (CRT-Effekt)
-        2. Zufällige Störstreifen: schmale horizontale Bänder werden
-           horizontal verschoben (Tracking-Fehler) und aufgehellt/abgedunkelt
-        3. Leichtes Chroma-Shift: Rot-Kanal minimal nach links, Blau nach rechts
-        4. Leichtes Rauschen über das gesamte Bild
-        Ergebnis: Nur ein Teil der Streifen ist sichtbar — nicht das ganze Bild.
+        ALGORITHM:
+        1. Horizontal scan lines: darken every other row (CRT effect).
+        2. Random glitch stripes: narrow horizontal bands are shifted
+           horizontally (tracking error) and brightened/darkened.
+        3. Subtle chroma shift: red channel slightly left, blue slightly right.
+        4. Light noise across the entire image.
+        Result: only a subset of the stripes is visible — not the whole image.
         """
         import random
         def vhs(img):
@@ -1391,9 +1391,9 @@ class ImageEditor(QMainWindow):
             w, h = img.size
             pixels = list(img.getdata())
 
-            rng = random.Random(42)   # Reproduzierbares Ergebnis für Vorschau
+            rng = random.Random(42)   # Fixed seed for reproducible filter preview
 
-            # ── 1. Scan-Linien: jede 2. Zeile 15% abdunkeln ──────────
+            # ── 1. Scan lines: darken every other row by 15 % ────────
             for y in range(0, h, 2):
                 for x in range(w):
                     idx = y * w + x
@@ -1402,8 +1402,8 @@ class ImageEditor(QMainWindow):
 
             img.putdata(pixels)
 
-            # ── 2. Störstreifen (Tracking-Fehler) ────────────────────
-            # Ca. 8–14 zufällige Streifen, jeder 2–12 px hoch
+            # ── 2. Glitch stripes (tracking error) ───────────────────
+            # Approx. 8–14 random stripes, each 2–12 px tall
             n_stripes = rng.randint(8, 14)
             for _ in range(n_stripes):
                 sy     = rng.randint(0, h - 1)
@@ -1450,30 +1450,30 @@ class ImageEditor(QMainWindow):
 
     def apply_anaglyph_3d(self):
         """
-        Anaglyphen-3D-Filter: Simuliert den Rot/Cyan-Brillen-Effekt.
+        Anaglyph 3D filter: simulates the red/cyan glasses effect.
 
-        ALGORITHMUS:
-        1. Linkes Auge  = Original (Rot-Kanal)
-        2. Rechtes Auge = horizontal verschobene Kopie (Cyan = G+B-Kanal)
-        3. Shift ≈ Bildbreite / 40  → realistischer Stereo-Abstand
-        4. Kombination: R aus links, G+B aus rechts → Anaglyphen-Bild
+        ALGORITHM:
+        1. Left eye  = original (red channel).
+        2. Right eye = horizontally shifted copy (cyan = G+B channels).
+        3. Shift ≈ image width / 40 → realistic stereo separation.
+        4. Combine: R from left, G+B from right → anaglyph image.
 
-        Für optimalen Effekt eine Rot/Cyan-3D-Brille aufsetzen.
+        For the best effect, wear a pair of red/cyan 3D glasses.
         """
         def anaglyph(img):
             img   = img.convert("RGB")
             w, h  = img.size
             shift = max(2, w // 40)
 
-            # Linkes Auge: nur R-Kanal
+            # Left eye: red channel only
             r_ch, _, _ = img.split()
 
-            # Rechtes Auge: um `shift` Pixel nach rechts verschoben
+            # Right eye: shifted `shift` pixels to the right
             shifted = PILImage.new("RGB", (w, h), (0, 0, 0))
             shifted.paste(img.crop((0, 0, w - shift, h)), (shift, 0))
             _, g_ch, b_ch = shifted.split()
 
-            # Zusammensetzen: R von links, G+B von rechts
+            # Combine: R from left, G+B from right
             return PILImage.merge("RGB", (r_ch, g_ch, b_ch))
 
         self._filt(anaglyph)
@@ -1484,12 +1484,12 @@ class ImageEditor(QMainWindow):
 
     def _generate_filter_previews(self, thumb_size: int = 100) -> dict:
         """
-        Erzeugt Thumbnail-Vorschauen für alle Filter.
+        Generate thumbnail previews for all available filters.
 
-        TECHNIK — Temporäres Monkey-Patching:
-        _filt() hat Seiteneffekte (canvas.update_image, _reset_sliders, _update_status).
-        Diese werden für die Vorschau-Generierung auf No-Ops gesetzt und danach
-        vollständig wiederhergestellt. So bleibt der Editor-Zustand unverändert.
+        TECHNIQUE — temporary monkey-patching:
+        _filt() has side-effects (canvas.update_image, _reset_sliders, _update_status).
+        These are replaced with no-ops for the duration of preview generation and then
+        fully restored, leaving the editor state unchanged.
         """
         if not self.current_pil:
             return {}
@@ -1538,7 +1538,7 @@ class ImageEditor(QMainWindow):
         return previews
 
     def open_filter_preview(self):
-        """Filter-Vorschau-Dialog öffnen. Thumbnails werden live berechnet."""
+        """Open the filter preview dialog. Thumbnails are computed on the fly."""
         if not self.current_pil:
             self.status_bar.showMessage("⚠ Zuerst ein Bild öffnen.", 2000)
             return
@@ -1558,19 +1558,19 @@ class ImageEditor(QMainWindow):
     # ══════════════════════════════════════════════
 
     def open_gif_editor(self):
-        """GIF-Editor öffnen."""
+        """Open the GIF editor dialog."""
         if not self.layers:
             self.status_bar.showMessage("⚠ Zuerst ein Bild öffnen.", 2000); return
         GifEditorDialog(self, self).exec()
 
     def open_3d_dialog(self):
-        """2D → 3D Modell-Viewer öffnen."""
+        """Open the 2D → 3D model viewer dialog."""
         if not self.layers:
             self.status_bar.showMessage("⚠ Zuerst ein Bild öffnen.", 2000); return
         ThreeDModelDialog(self, self).exec()
 
     def open_collage_dialog(self):
-        """Collage-Editor öffnen. Das Ergebnis ersetzt das aktuelle Bild."""
+        """Open the collage editor. The result replaces the current image."""
         dlg = CollageDialog(self)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.result_image:
             self._push()
@@ -1596,35 +1596,35 @@ class ImageEditor(QMainWindow):
 
     def set_draw_tool(self, tool: str):
         """
-        Aktives Zeichen-Werkzeug wechseln — sofort wirksam.
+        Switch the active drawing tool — takes effect immediately.
 
-        BUG-FIX (wichtig für die Prüfung erklären!):
-        Problem: Altes Overlay blieb aktiv nach Werkzeugwechsel.
-        Ursache: Overlay speichert das Werkzeug bei Erstellung.
-                 Wechsel des self.draw_tool änderte das laufende Overlay nicht.
-        Lösung:  Altes Overlay mit blockSignals(True) schließen
-                 (blockSignals verhindert Callback-Loop durch destroyed-Signal),
-                 dann neues Overlay mit neuem Werkzeug sofort starten.
+        BUG FIX:
+        Problem: The old overlay remained active after switching tools.
+        Cause:   The overlay stores the tool at creation time;
+                 changing self.draw_tool did not update the running overlay.
+        Fix:     Close the old overlay with blockSignals(True)
+                 (blockSignals prevents a callback loop via the destroyed signal),
+                 then immediately start a new overlay with the new tool.
         """
-        # Zauberstab ist kein Zeichen-Werkzeug → direkt starten
+        # Magic wand is not a drawing tool — launch it directly
         if tool == "magic_wand":
             self.start_magic_wand()
             return
 
         self.draw_tool = tool
 
-        # Alle Tool-Buttons: nur den gewählten aktivieren
+        # All tool buttons: activate only the selected one
         for k, btn in self._draw_btns.items():
             btn.setChecked(k == tool)
 
-        # Overlay sofort neu starten falls Zeichenmodus aktiv ist
+        # Restart the overlay immediately if drawing mode is active
         if self.btn_draw_start.isChecked() and self.current_pil:
-            # Altes Overlay sauber schließen (blockSignals verhindert Callback-Loop)
+            # Close old overlay cleanly (blockSignals prevents callback loop)
             if self.canvas._overlay:
                 self.canvas._overlay.blockSignals(True)
                 self.canvas._overlay.close()
                 self.canvas._overlay = None
-            # Neues Overlay mit neuem Werkzeug sofort starten
+            # Start a new overlay with the new tool immediately
             self._start_draw_overlay()
 
         self.status_bar.showMessage(
@@ -1632,13 +1632,13 @@ class ImageEditor(QMainWindow):
         )
 
     def pick_color(self):
-        """Farbdialog öffnen. Startet Overlay sofort mit neuer Farbe neu."""
+        """Open the colour dialog and immediately restart the overlay with the new colour."""
         color = QColorDialog.getColor(self.draw_color, self, "Farbe wählen")
         if color.isValid():
             self.draw_color = color
             self.color_preview.setStyleSheet(
                 f"background:{color.name()}; border:1px solid #555; border-radius:3px;")
-            # Overlay sofort mit neuer Farbe neu starten
+            # Restart the overlay immediately with the new colour
             if self.btn_draw_start.isChecked() and self.current_pil:
                 if self.canvas._overlay:
                     self.canvas._overlay.blockSignals(True)
@@ -1648,9 +1648,9 @@ class ImageEditor(QMainWindow):
 
     def _on_draw_toggle(self, active: bool):
         """
-        Zeichenmodus ein- oder ausschalten.
-        Bei Aktivierung: DrawOverlay starten.
-        Bei Deaktivierung: Overlay schließen.
+        Toggle drawing mode on or off.
+        When activated: start the DrawOverlay.
+        When deactivated: close the overlay.
         """
         if not self.current_pil:
             self.btn_draw_start.setChecked(False)
@@ -1668,16 +1668,16 @@ class ImageEditor(QMainWindow):
 
     def _start_draw_overlay(self):
         """
-        Neues DrawOverlay mit aktuellem Werkzeug, Farbe und Größe starten.
-        Verbindet das drawing_done-Signal mit der Methode die den
-        Strich permanent auf das PIL-Bild überträgt.
+        Start a new DrawOverlay with the current tool, colour, and brush size.
+        Connects the drawing_done signal to the method that commits the stroke
+        permanently to the PIL image.
         """
         overlay = self.canvas.start_draw_overlay(
             self.draw_tool, self.draw_color, self.draw_size,
             texture=self.draw_texture
         )
         overlay.drawing_done.connect(self._apply_draw_fn)
-        # Wenn Overlay durch ESC geschlossen wird → Toggle zurücksetzen
+        # If overlay is closed via ESC → reset the toggle button
         overlay.destroyed.connect(lambda: (
             self.btn_draw_start.blockSignals(True),
             self.btn_draw_start.setChecked(False),
@@ -1687,9 +1687,9 @@ class ImageEditor(QMainWindow):
 
     def _apply_draw_fn(self, draw_fn):
         """
-        Wendet eine Zeichenfunktion permanent auf die aktive Ebene an.
-        Legt einen Undo-Schritt an. Startet danach das Overlay
-        mit dem AKTUELL eingestellten Werkzeug neu (nicht dem alten).
+        Commit a drawing function permanently to the active layer.
+        Creates an undo step, then restarts the overlay with the
+        CURRENTLY selected tool (not the old one).
         """
         if not self.layers:
             return
@@ -1701,13 +1701,13 @@ class ImageEditor(QMainWindow):
         layer.image   = result.convert("RGBA")
         self.original_pil = layer.image.copy()
         self._update_display()
-        # Overlay mit dem AKTUELL gewählten Werkzeug neu starten
+        # Restart overlay with the CURRENTLY selected tool
         if self.btn_draw_start.isChecked():
             if self.canvas._overlay:
                 self.canvas._overlay.blockSignals(True)
                 self.canvas._overlay.close()
                 self.canvas._overlay = None
-            self._start_draw_overlay()  # nutzt self.draw_tool (immer aktuell)
+            self._start_draw_overlay()  # uses self.draw_tool (always current)
 
     # ══════════════════════════════════════════════
     #  TEXT-TO-DRAWING: Formen platzieren
@@ -1715,15 +1715,15 @@ class ImageEditor(QMainWindow):
 
     def start_shape_placer(self):
         """
-        Startet das Shape-Placer-Overlay.
-        Die gewählte Form wird als Vorschau unter dem Mauszeiger gezeigt.
-        Ein Klick platziert sie permanent auf dem Bild.
+        Start the shape placer overlay.
+        The selected shape is shown as a preview under the cursor;
+        a click places it permanently on the image.
         """
         if not self.current_pil:
             self.status_bar.showMessage("⚠ Zuerst ein Bild öffnen.", 2000)
             return
 
-        # Zeichenmodus deaktivieren falls aktiv
+        # Deactivate drawing mode if it is currently active
         if self.btn_draw_start.isChecked():
             self.btn_draw_start.setChecked(False)
 
@@ -1739,8 +1739,8 @@ class ImageEditor(QMainWindow):
 
     def _on_shape_placed(self, shape_key: str, ix: int, iy: int):
         """
-        Callback wenn Nutzer auf das Bild geklickt hat.
-        Zeichnet die Form permanent auf das PIL-Bild.
+        Callback fired when the user clicks on the canvas.
+        Draws the selected shape permanently onto the PIL image.
         """
         if not self.layers: return
         layer = self.layers[self.active_layer_idx]
@@ -1749,7 +1749,7 @@ class ImageEditor(QMainWindow):
         color_tuple = (self.draw_color.red(), self.draw_color.green(),
                        self.draw_color.blue(), 255)
         size      = self.sl_shape_size.value()
-        lw        = max(2, size // 40)   # Strichbreite proportional zur Größe
+        lw        = max(2, size // 40)   # Line width proportional to shape size
         result = draw_shape_on_pil(
             layer.image.copy(),
             shape_key, ix, iy, size, color_tuple, lw
@@ -1767,21 +1767,21 @@ class ImageEditor(QMainWindow):
     # ══════════════════════════════════════════════
 
     def zoom_in(self):
-        """Vergrößert den Zoom um ZOOM_STEP (15%)."""
+        """Increase the zoom level by ZOOM_STEP (15 %)."""
         self.canvas.set_zoom(self.canvas.get_zoom() + self.ZOOM_STEP)
         self._update_status()
 
     def zoom_out(self):
-        """Verkleinert den Zoom um ZOOM_STEP (15%)."""
+        """Decrease the zoom level by ZOOM_STEP (15 %)."""
         self.canvas.set_zoom(self.canvas.get_zoom() - self.ZOOM_STEP)
         self._update_status()
 
     def zoom_reset(self):
-        """Setzt Zoom auf 100% (1:1) zurück."""
+        """Reset zoom to 100 % (1:1 pixel mapping)."""
         self.canvas.set_zoom(1.0); self._update_status()
 
     def zoom_fit(self):
-        """Passt den Zoom so an, dass das gesamte Bild in den Viewport passt."""
+        """Adjust zoom so the entire image fits within the viewport."""
         if not self.canvas._pix_orig: return
         aw = self.scroll.viewport().width()  - 20
         ah = self.scroll.viewport().height() - 20
@@ -1791,7 +1791,7 @@ class ImageEditor(QMainWindow):
         self._update_status()
 
     def wheelEvent(self, event):
-        """Strg+Mausrad = Zoom rein/raus; ohne Strg = normales Scrollen."""
+        """Ctrl+scroll = zoom in/out; without Ctrl = normal scrolling."""
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             self.zoom_in() if event.angleDelta().y() > 0 else self.zoom_out()
             event.accept()
@@ -1799,7 +1799,7 @@ class ImageEditor(QMainWindow):
             super().wheelEvent(event)
 
     def event(self, event):
-        """Verarbeitet Pinch-Gesten (Touch-Zoom) auf dem Hauptfenster."""
+        """Handle pinch gestures (touch zoom) on the main window."""
         if event.type() == event.Type.Gesture:
             pinch = event.gesture(Qt.GestureType.PinchGesture)
             if pinch:
@@ -1813,7 +1813,7 @@ class ImageEditor(QMainWindow):
     # ══════════════════════════════════════════════
 
     def run_ai_analysis(self):
-        """Startet Moondream-Analyse im Hintergrund-Thread."""
+        """Start Moondream image analysis in a background thread."""
         if not self.current_pil: return
         self.ai_text.setPlainText("🔄  Moondream analysiert das Bild…\n\nBitte warten.")
         self.btn_ai.setEnabled(False)
@@ -1824,19 +1824,19 @@ class ImageEditor(QMainWindow):
         self.ai_worker.start()
 
     def _on_ai_result(self, desc: str):
-        """Zeigt das KI-Analyseergebnis im Textfeld an und scrollt nach oben."""
+        """Display the AI analysis result in the text field and scroll to the top."""
         self.ai_text.setPlainText(f"🤖  KI-Beschreibung (Beta):\n\n{desc.strip()}")
-        # Zum Anfang scrollen damit kein Text abgeschnitten wirkt
+        # Scroll to top so the beginning of the description is immediately visible
         self.ai_text.verticalScrollBar().setValue(0)
         self._reset_ai_btn()
 
     def _on_ai_error(self, err: str):
-        """Zeigt eine KI-Fehlermeldung im Textfeld an."""
+        """Display an AI error message in the text field."""
         self.ai_text.setPlainText(f"⚠  Fehler:\n\n{err}")
         self._reset_ai_btn()
 
     def _reset_ai_btn(self):
-        """Stellt den KI-Analyse-Button nach Erfolg oder Fehler wieder auf seinen Standardzustand zurück."""
+        """Restore the AI analyse button to its default state after success or error."""
         self.btn_ai.setEnabled(True)
         self.btn_ai.setText("🤖  Analysieren  (Strg+A)")
 
@@ -1845,7 +1845,7 @@ class ImageEditor(QMainWindow):
     # ══════════════════════════════════════════════
 
     def pick_texture(self):
-        """Textur-Bild laden und als Pinsel-Stempel verwenden."""
+        """Load a texture image and use it as a brush stamp."""
         path, _ = QFileDialog.getOpenFileName(self, "Textur wählen", "",
             "Bilder (*.png *.jpg *.jpeg *.bmp *.webp);;Alle (*)")
         if not path:
@@ -1865,13 +1865,13 @@ class ImageEditor(QMainWindow):
     # ══════════════════════════════════════════════
 
     def start_magic_wand(self):
-        """Zauberstab-Overlay starten — Klick wählt Farbbereiche aus."""
+        """Launch the magic wand overlay — clicks select colour regions."""
         if not self.layers:
             self.status_bar.showMessage("⚠ Zuerst ein Bild öffnen.", 2000); return
         layer = self.layers[self.active_layer_idx]
         if not layer.image:
             return
-        # Zeichenmodus deaktivieren falls aktiv
+        # Deactivate drawing mode if currently active
         if self.btn_draw_start.isChecked():
             self.btn_draw_start.setChecked(False)
         if self.canvas._overlay:
@@ -1891,7 +1891,7 @@ class ImageEditor(QMainWindow):
             "|  Enter = bestätigen  |  ESC = abbrechen")
 
     def _on_wand_ready(self, mask):
-        """Callback wenn Zauberstab-Auswahl bestätigt wurde (Enter)."""
+        """Callback fired when the magic wand selection is confirmed (Enter)."""
         self.selection_mask = mask
         if self.canvas._overlay:
             self.canvas._overlay.close()
@@ -1905,7 +1905,7 @@ class ImageEditor(QMainWindow):
         self.status_bar.showMessage("Auswahl aufgehoben.", 2000)
 
     def cut_selection_to_layer(self):
-        """Ausgewählten Bereich ausschneiden und auf neue Ebene verschieben."""
+        """Cut the selected region and move it onto a new layer."""
         if self.selection_mask is None:
             self.status_bar.showMessage("⚠ Keine Auswahl aktiv.", 2000); return
         if not self.layers:
@@ -1914,19 +1914,19 @@ class ImageEditor(QMainWindow):
         if not layer.image:
             return
         self._push()
-        # Ausschneiden: ausgewählte Pixel auf neue Ebene kopieren
+        # Copy selected pixels to a new layer
         src  = layer.image.convert("RGBA")
         mask = self.selection_mask.resize(src.size, PILImage.Resampling.NEAREST)
-        # Neue Ebene: nur ausgewählte Pixel sichtbar
+        # New layer: only the selected pixels are visible
         cut_img = PILImage.new("RGBA", src.size, (0, 0, 0, 0))
         cut_img.paste(src, mask=mask)
-        # Original-Ebene: ausgewählte Pixel transparent machen
+        # Original layer: make selected pixels transparent
         inv_mask = mask.point([255 - v for v in range(256)])
         kept = PILImage.new("RGBA", src.size, (0, 0, 0, 0))
         kept.paste(src, mask=inv_mask)
         layer.image = kept
         self.original_pil = kept.copy()
-        # Neue Ebene darüber einfügen
+        # Insert the new layer above
         self.layers.append(Layer(cut_img, "Ausschnitt"))
         self.active_layer_idx = len(self.layers) - 1
         self.selection_mask   = None
@@ -1941,21 +1941,21 @@ class ImageEditor(QMainWindow):
 
     def _start_layer_transform(self, layer_idx: int):
         """
-        Startet das TransformOverlay für die angegebene Ebene.
-        Die Ebene wird während des Transforms ausgeblendet, damit nur das
-        verschobene Vorschaubild sichtbar ist (kein Duplikat).
-        Enter bestätigt, ESC bricht ab und stellt die Sichtbarkeit wieder her.
+        Start the TransformOverlay for the specified layer.
+        The layer is hidden during the transform so only the draggable preview
+        is visible (no duplicate). Enter confirms, ESC cancels and restores
+        layer visibility.
         """
         if layer_idx >= len(self.layers):
             return
         layer = self.layers[layer_idx]
         if not layer.image:
             return
-        # Laufendes Overlay schließen
+        # Close any running overlay first
         if self.canvas._overlay:
             self.canvas._overlay.close()
             self.canvas._overlay = None
-        # Original-Ebene AUSBLENDEN während des Transforms
+        # HIDE the original layer during the transform
         layer.visible = False
         self._update_display()
 
@@ -1974,28 +1974,28 @@ class ImageEditor(QMainWindow):
             "🔀  Ziehen = Verschieben  |  Mausrad = Skalieren  |  Enter = OK  |  ESC = Abbruch")
 
     def _on_transform_done(self, layer_idx: int, new_x: int, new_y: int, scale: float):
-        """Callback wenn Transform bestätigt — Ebene verschieben und skalieren."""
+        """Callback fired when the transform is confirmed — move and scale the layer."""
         if layer_idx >= len(self.layers):
             return
         layer = self.layers[layer_idx]
         if not layer.image:
             return
         self._push()
-        # Bild skalieren wenn nötig
+        # Scale the image only if the scale factor changed meaningfully
         if abs(scale - 1.0) > 0.001:
             w = max(1, int(layer.image.width  * scale))
             h = max(1, int(layer.image.height * scale))
             layer.image = layer.image.resize((w, h), PILImage.Resampling.LANCZOS)
         layer.x       = new_x
         layer.y       = new_y
-        layer.visible = True          # Ebene wieder einblenden
+        layer.visible = True          # Make the layer visible again
         self.original_pil = layer.image.copy()
         self.canvas._overlay = None
         self._update_display()
         self.status_bar.showMessage("✅  Transform angewendet.", 2000)
 
     def _on_transform_cancelled(self, layer_idx: int):
-        """Callback wenn Transform abgebrochen — Ebene wieder einblenden."""
+        """Callback fired when the transform is cancelled — restore layer visibility."""
         if layer_idx < len(self.layers):
             self.layers[layer_idx].visible = True
             self._update_display()
@@ -2007,7 +2007,7 @@ class ImageEditor(QMainWindow):
     # ══════════════════════════════════════════════
 
     def _update_status(self):
-        """Aktualisiert die Statusleiste mit Dateiname, Bildgröße, Zoom und Undo-Anzahl."""
+        """Update the status bar with file name, image size, zoom level, and undo count."""
         if self.current_file and self.current_pil:
             pct  = int(self.canvas.get_zoom() * 100)
             name = self.current_file.split("/")[-1]

@@ -1,195 +1,200 @@
-# SBS Bildeditor
+# SBS Bildeditor v3
 
-A feature-rich desktop image editor built with Python and PyQt6, combining classic image editing tools with modern AI-powered features like depth estimation, novel-view synthesis, and 2D-to-3D model generation.
+A feature-rich desktop image editor built with **Python** and **PyQt6**, developed as a school portfolio project at SBS Herzogenaurach (March 2026). It combines a clean, layer-based editing workflow with AI-powered image analysis, animated GIF creation, and interactive 2D-to-3D visualisation — all running entirely offline on your local machine.
 
-> Developed as a Bachelor Professional exam project at SBS Herzogenaurach, March 2026.
+---
+
+## Screenshots
+
+| Main Editor | Filter Preview |
+|:-----------:|:--------------:|
+| ![Main Editor](screenshots/01_main.png) | ![Filter Preview](screenshots/02_filter_preview.png) |
+
+| Collage Editor | GIF / Animation Editor |
+|:--------------:|:----------------------:|
+| ![Collage Editor](screenshots/03_collage.png) | ![GIF Editor](screenshots/04_gif_editor.png) |
+
+| 2D → 3D Viewer |
+|:--------------:|
+| ![3D Viewer](screenshots/05_3d_viewer.png) |
+
+> Save your five screenshots as `screenshots/01_main.png` through `screenshots/05_3d_viewer.png` in the project root.
 
 ---
 
 ## Features
 
-### Image Editing
-- **Adjustments** — Brightness, contrast, saturation, sharpness via real-time sliders
-- **Transformations** — Rotate 90°, flip horizontal/vertical
-- **Cropping** — Rectangle crop with drag handles; freehand lasso crop
-- **Undo** — Single-step undo for all operations
-- **Reset** — Restore the original image at any time
+### Layer System
+- Multiple RGBA layers with individual **opacity** and **visibility** controls
+- Add, delete, rename, merge, and flatten layers
+- **Layer panel** in the left dock with live thumbnails
+- **Transform overlay** — move and scale any layer interactively with mouse + scroll wheel
+
+### Image Adjustments
+- Real-time **brightness, contrast, saturation, and sharpness** sliders
+- Always applied from the original — no compounding artefacts
+- **Reset** restores the original at any time; **Undo** (up to 20 steps) covers all operations
+
+### Crop & Selection Tools
+- **Rectangle Crop** — drag a region, then freely reposition and resize it before confirming
+- **Lasso Crop** — freehand polygon selection with a movable overlay before applying
+- **Magic Wand** — tolerance-based flood-fill colour selection; Shift+click adds regions; cut to a new layer
 
 ### Drawing Tools
 | Tool | Description |
 |---|---|
-| ✏️ Pen | Precise freehand drawing |
-| 🖌️ Brush | Soft rounded strokes with variable size |
+| ✏️ Pen | Precise freehand pixel drawing |
+| 🖌️ Brush | Soft rounded strokes with configurable size |
 | ⬜ Eraser | Transparent eraser with smooth edges |
-| 💧 Blur Brush | Soft smudge / local Gaussian blur |
+| 💧 Blur Brush | Localised Gaussian softening |
 | ╱ Line | Straight lines with variable width |
 | ▭ Rectangle | Outlined rectangles |
 | ◯ Ellipse | Outlined circles and ellipses |
-| T Text | Insert text with font selection |
-| ～ Curve | Smooth cubic Bézier curves |
-| 🖼️ Texture Brush | Paint with a custom loaded texture |
-
-### Selection Tools
-- **Magic Wand** — Flood-fill selection by colour similarity with tolerance control
-- **Rectangle Crop** — Drag-resizable selection area
-- **Lasso Crop** — Freehand polygon selection
-
-### Layer System
-- Multiple RGBA layers with individual opacity controls
-- Toggle layer visibility
-- Add, delete, rename, and reorder layers
-- Layer panel in the left dock
+| T Text | Place text at any position with font selection |
+| ～ Curve | Smooth Catmull-Rom spline via control points |
+| 🖼️ Texture Brush | Paint with a custom loaded PNG/JPG texture |
 
 ### Filter Library (20+ Filters)
-**Colour** — Grayscale, Sepia, Cool, Warm, Invert, Psychedelic, Dog Vision, Night Mode
-**Sharpness** — Sharpen, Strong Sharpen, Blur, Strong Blur
-**Effects** — Emboss, Edge Enhance, Auto Contrast, Film Grain, Watercolor, Noise, Vignette
-**Creative** — Comic/Cartoon, VHS Flicker, Anaglyph 3D, Kaleidoscope
-
-A **Filter Preview Dialog** (Ctrl+Shift+V) shows all filters as thumbnails at once for quick comparison.
+- **Colour** — Greyscale, Sepia, Cool, Warm, Purple, Green Cast, Invert
+- **Sharpness** — Sharpen, Strong Sharpen, Blur, Strong Blur
+- **Effects** — Emboss, Edge Enhance, Auto Contrast, Film Grain, Watercolour, Noise, Vignette
+- **Creative** — Comic/Cartoon, Dog Vision, Psychedelic, Night Mode, Kaleidoscope, VHS Flicker, Anaglyph 3D
+- **Live Filter Preview** — see all filters applied to your image as thumbnails before choosing
 
 ### Shape Library
-Predefined vector shapes (heart, star, sun, airplane, and more) that can be placed and scaled on the canvas via the Shape Placer tool.
+Pre-defined vector shapes (house, star, arrow, heart, sun, and more) that can be placed and scaled anywhere on the canvas.
 
 ### Collage Editor
-Arrange multiple images in a configurable grid layout and export the result as a single image.
+Arrange multiple images in a configurable grid (up to 4×4), apply per-cell filters, swap cells, and export as a single image.
 
-### GIF & Video Editor
-- Build multi-frame animations from images
-- Control per-frame delay
+### GIF & Animation Editor
+- **VHS Distortion Loop** — flickering CRT-style animation
+- **Star Shower** — procedural particle animation
+- **Path Animation** — image travels along a user-drawn Catmull-Rom path
+- **Parallax GIF** — depth-layer parallax effect
+- Optional audio track trimmed to GIF duration and saved as `.wav`
 - Export as animated **GIF** or **MP4 video**
-- Optional audio track support (WAV, with auto-resampling and looping)
 
-### AI Features
-| Feature | Model | Description |
-|---|---|---|
-| Image Analysis | Moondream | Generates a natural-language description of the image |
-| Depth Estimation | Depth-Anything-V2 / MiDaS | Creates a depth map from a single 2D image |
-| Novel View Synthesis | zero123plus-v1.1 | Generates a synthetic back side from a front-facing photo |
+### 2D → 3D Viewer (Beta)
+- AI depth estimation via **Depth-Anything-V2** (recommended) or **MiDaS** (fallback)
+- Silhouette-aware mesh with edge feathering for a natural rounded look
+- Interactive 3D mesh: mouse drag = rotation, scroll = zoom
+- Adjustable depth scale, depth inversion, and generated/AI back face
+- AI-synthesised back face via **Zero123plus** Novel View Synthesis
+- Export as **GLB** (Binary glTF), **OBJ + MTL + texture**, or **STL** for 3D printing (scaled to 100 mm)
 
-### 2D → 3D Model Generator *(Beta)*
-Converts any image into a 3D mesh using AI depth estimation:
-- Interactive 3D viewer (Matplotlib)
-- Depth scale and inversion controls
-- AI-generated backside texture with edge dilation for clean seams
-- **Export as GLB** (Binary glTF, requires `trimesh`)
-- **Export as OBJ** (Wavefront + MTL + texture PNG, pure Python fallback)
-- **Export as STL** for 3D printing — auto-scaled to 100 mm longest dimension, compatible with Cura, PrusaSlicer, and Bambu Studio
+### AI Image Analysis (Beta)
+Describes image content in natural language using **Moondream** via **Ollama** — runs fully locally, no cloud or API key required.
 
 ---
 
-## Requirements
+## Project Structure
 
-### Required
-```
-Python 3.10+
-PyQt6
-Pillow
-```
+The project follows a strict **modular architecture** — each class has its own dedicated file inside the `sbs/` package, keeping every component independently readable and maintainable.
 
-### Recommended (for full functionality)
 ```
-matplotlib          # 3D viewer
-trimesh             # GLB export
-opencv-python       # Texture dilation (cv2)
-scipy               # Depth maps, mask processing
-```
-
-### Optional (AI features)
-```
-torch               # Deep learning runtime
-transformers        # Depth-Anything-V2 / Moondream
-diffusers           # zero123plus novel-view synthesis
-accelerate          # Faster model inference
-ollama              # Local Moondream API
-```
-
-Install all at once:
-```bash
-pip install PyQt6 Pillow matplotlib trimesh opencv-python scipy torch transformers diffusers accelerate
+image_viewer/
+├── main.py              # Entry point — initialises Qt app and dark Fusion theme
+├── assets/
+│   └── app_icon.png     # Application icon
+├── screenshots/         # README screenshots (add your own here)
+└── sbs/
+    ├── __init__.py      # Package exports
+    ├── editor.py        # ImageEditor (QMainWindow) — main orchestrator
+    ├── layer.py         # Layer — data class for a single image layer
+    ├── widgets.py       # ImageCanvas, LayerPanel, HistogramWidget, LabeledSlider
+    ├── overlays.py      # CropOverlay, DrawOverlay, TransformOverlay, MagicWandOverlay, …
+    ├── dialogs.py       # FilterPreviewDialog, GifEditorDialog
+    ├── collage.py       # CollageDialog
+    ├── threed.py        # DepthWorker, NovelViewWorker, ThreeDViewerWidget, ThreeDModelDialog
+    ├── ai_worker.py     # AIWorker (QThread) — Moondream via Ollama
+    └── utils.py         # pil_to_qpixmap, SHAPE_LIBRARY, draw_shape_on_pil
 ```
 
 ---
 
-## Installation
+## Setup & Execution
+
+### Prerequisites
+
+- **Python 3.10** or newer
+- **pip**
+
+### 1 — Clone the repository
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/your-username/image_viewer.git
-cd image_viewer
-
-# 2. Install dependencies
-pip install PyQt6 Pillow matplotlib trimesh opencv-python scipy
-
-# 3. Run the application
-python image_viewer.py
+git clone https://github.com/JulianWIAI/image-viewer.git
+cd image-viewer
 ```
 
----
-
-## Usage
+### 2 — Install core dependencies
 
 ```bash
-python image_viewer.py
+pip install PyQt6 Pillow
 ```
 
-Open an image via **File → Open** or `Ctrl+O`, then use the toolbar, right-panel sliders, and menus to edit.
+### 3 — Optional dependencies (enhanced features)
+
+| Feature | Install command |
+|---------|-----------------|
+| 3D viewer (Matplotlib) | `pip install matplotlib` |
+| Depth-Anything-V2 depth estimation *(recommended)* | `pip install transformers torch` |
+| MiDaS depth estimation *(fallback)* | `pip install torch timm` |
+| AI Novel View Synthesis (3D back face) | `pip install diffusers transformers accelerate torch torchvision` |
+| GLB 3D export | `pip install trimesh` |
+| MP4 video export | `pip install opencv-python` |
+
+### 4 — Optional: AI image analysis (Moondream)
+
+1. Install [Ollama](https://ollama.com)
+2. Pull the model and start the server:
+
+```bash
+ollama pull moondream
+ollama serve
+```
+
+### 5 — Run the application
+
+```bash
+python main.py
+```
 
 ---
 
 ## Keyboard Shortcuts
 
 | Shortcut | Action |
-|---|---|
-| `Ctrl+O` | Open file |
+|----------|--------|
+| `Ctrl+O` | Open image |
 | `Ctrl+S` | Save |
 | `Ctrl+Shift+S` | Save As |
 | `Ctrl+Z` | Undo |
 | `Ctrl+R` | Reset to original |
-| `Ctrl+F` | Zoom to fit |
 | `Ctrl+0` | Zoom 1:1 |
+| `Ctrl+F` | Zoom to fit |
 | `Ctrl++` | Zoom in |
 | `Ctrl+-` | Zoom out |
 | `Ctrl+Shift+R` | Rectangle crop |
 | `Ctrl+Shift+L` | Lasso crop |
-| `Ctrl+Shift+V` | Filter preview |
-| `Ctrl+Shift+C` | Collage editor |
-| `Ctrl+Shift+G` | GIF / video editor |
-| `Ctrl+Shift+3` | 3D model generator |
-| `Ctrl+Shift+P` | Pen tool |
-| `Ctrl+Shift+B` | Brush tool |
-| `Ctrl+Shift+E` | Eraser tool |
-| `Ctrl+Shift+W` | Magic wand |
-| `Ctrl+Shift+F` | Shape placer |
 | `Ctrl+A` | AI image analysis |
-
----
-
-## Project Structure
-
-```
-image_viewer/
-├── image_viewer.py   # Entire application (single-file)
-├── app_icon.png      # Application icon
-└── README.md         # This file
-```
 
 ---
 
 ## Export Formats
 
 | Format | Use case |
-|---|---|
+|--------|----------|
 | PNG | Lossless with transparency |
-| JPG | Compressed photos |
+| JPG / BMP | Compressed photos |
 | GIF | Animated images |
 | MP4 | Video with optional audio |
 | GLB | 3D model for Blender, web viewers |
-| OBJ | 3D model, universal fallback |
-| STL | 3D printing (Cura, PrusaSlicer, Bambu) |
+| OBJ + MTL | Universal 3D format |
+| STL | 3D printing (Cura, PrusaSlicer, Bambu Studio) |
 
 ---
 
-## License
+## Development Note
 
-This project was created for educational purposes.
+This project was developed, polished, and refactored with the assistance of Artificial Intelligence.
